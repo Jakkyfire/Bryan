@@ -1,0 +1,6 @@
+{
+  "name": "Resource Bot Workspace",
+  "description": "An intelligent AI workspace with tool calling for interactive maps, bin collection schedules, live web research, file analysis, and voice capabilities.",
+  "requestFramePermissions": ["geolocation", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

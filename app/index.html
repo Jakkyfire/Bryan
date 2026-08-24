@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LifeguideAssist - Autonomous AI Agent</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <div class="app-viewport" id="appViewport">
+    <!-- Main Workspace -->
+    <div class="workspace-main" id="workspaceMain">
+      <!-- Logo Box for Initial State -->
+      <div class="logo-box" id="logoBox">
+        <img
+          src="./LifeguideAssist_Logo__4_-removebg-preview.png"
+          onerror="this.src='./logo.png'"
+          alt="LifeguideAssist Logo"
+          class="logo-svg"
+          style="width: 52px; height: 52px; object-fit: contain;"
+        />
+      </div>
+      <h1 id="mainTitle">What are we looking into?</h1>
+
+      <!-- Full-width Chat Scroll Area -->
+      <div class="chat-scroll-area" id="chatScrollArea">
+        <div class="chat-top-fade-mask"></div>
+
+        <div class="chat-messages-container">
+          <div class="chat-history" id="chatHistory"></div>
+
+          <!-- Thinking Indicator -->
+          <div class="msg-row assistant-row" id="thinkingIndicator" style="display: none;">
+            <div class="ai-avatar-badge" title="LifeguideAssist">
+              <img
+                src="./logo.png"
+                onerror="this.src='./LifeguideAssist_Logo__4_-removebg-preview.png'"
+                alt="LifeguideAssist"
+                class="ai-avatar-svg"
+                style="width: 32px; height: 32px; object-fit: contain;"
+              />
+            </div>
+            <div class="msg-body">
+              <div class="thinking-box">
+                <span class="thinking-text">Thinking...</span>
+                <span class="thinking-toggle-label">(evaluating context)</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Prompt Timeline Rail -->
+        <div class="prompt-timeline-rail" id="promptTimelineRail" style="display: none;">
+          <div class="timeline-lines-viewport" id="timelineLinesViewport"></div>
+        </div>
+      </div>
+
+      <!-- Input Container Wrapper -->
+      <div class="input-container-wrapper" id="inputContainerWrapper">
+        <!-- Suggested Prompts Bar -->
+        <div class="suggestions-prompt-container" id="suggestionsContainer" style="display: none;">
+          <button class="tool-btn" id="scrollLeftBtn" style="padding: 2px 6px; border-radius: 50%;">‹</button>
+          <div class="suggestions-scroll-wrapper">
+            <div class="suggestions-prompt-scroll" id="suggestionsScroll"></div>
+          </div>
+          <button class="tool-btn" id="scrollRightBtn" style="padding: 2px 6px; border-radius: 50%;">›</button>
+        </div>
+
+        <!-- Main Input Box -->
+        <div class="input-box" id="inputBox">
+          <!-- Attached Files Row -->
+          <div class="attached-files-row" id="attachedFilesRow"></div>
+
+          <!-- Textarea Input -->
+          <div class="input-row-main">
+            <textarea
+              id="inputTextarea"
+              class="input-textarea"
+              rows="1"
+              placeholder="Ask anything, map places, schedule events, check weather..."
+            ></textarea>
+          </div>
+
+          <!-- Input Toolbar -->
+          <div class="input-tools-bar">
+            <div class="left-tools">
+              <!-- Add File Dropdown -->
+              <div class="tool-dropdown-container">
+                <button class="tool-btn" id="fileMenuBtn" title="Attach files">
+                  <span>📄 Add File</span>
+                </button>
+                <div class="tool-popup-menu" id="fileMenuPopup" style="display: none;">
+                  <button class="tool-popup-item" id="openFileMenuItem">
+                    <div class="popup-item-icon">📂</div>
+                    <div class="popup-item-info">
+                      <span class="popup-item-title">Open file</span>
+                      <span class="popup-item-sub">Attach documents or code (max 5)</span>
+                    </div>
+                  </button>
+                </div>
+                <input type="file" id="hiddenFileInput" multiple style="display: none;" />
+              </div>
+
+              <!-- Tools Dropdown -->
+              <div class="tool-dropdown-container">
+                <button class="tool-btn" id="toolsBtn" title="Tools & Integrations">
+                  <span>🛠️ Tools</span>
+                </button>
+                <div class="tool-popup-menu" id="toolsMenuPopup" style="display: none;">
+                  <button class="tool-popup-item" id="popupAutoLocateBtn">
+                    <div class="popup-item-icon" style="background: #143224; color: #10b981;">🧭</div>
+                    <div class="popup-item-info">
+                      <span class="popup-item-title">Auto Locator</span>
+                      <span class="popup-item-sub">Detect current GPS position</span>
+                    </div>
+                  </button>
+                  <button class="tool-popup-item" id="popupCalendarBtn">
+                    <div class="popup-item-icon" style="background: #332412; color: #eab308;">📅</div>
+                    <div class="popup-item-info">
+                      <span class="popup-item-title">Calendar & Schedules</span>
+                      <span class="popup-item-sub">Check dates, deadlines & events</span>
+                    </div>
+                  </button>
+                  <button class="tool-popup-item" id="popupWeatherBtn">
+                    <div class="popup-item-icon" style="background: #0e2b3d; color: #38bdf8;">🌤️</div>
+                    <div class="popup-item-info">
+                      <span class="popup-item-title">Weather Detector</span>
+                      <span class="popup-item-sub">Real-time radar & forecasts</span>
+                    </div>
+                  </button>
+                  <button class="tool-popup-item" id="popupTtsBtn">
+                    <div class="popup-item-icon" style="background: #2b1a3d; color: #c084fc;">🔊</div>
+                    <div class="popup-item-info">
+                      <span class="popup-item-title">Text to Speech</span>
+                      <span class="popup-item-sub">Read responses aloud</span>
+                    </div>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Right Send Button -->
+            <div class="right-tools">
+              <button class="send-button" id="sendBtn" title="Send message">↵</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Hero Subtext and Quick Actions (only 3 options as requested) -->
+      <div class="hero-elements" id="heroElements">
+        <p class="description">
+          I can map places, organize your calendar and schedule, and discover insights — results open in the preview panel.
+        </p>
+
+        <div class="pills-container">
+          <button class="pill-btn" data-action="map">
+            <span>🗺️ Map a place</span>
+          </button>
+          <button class="pill-btn" data-action="calendar">
+            <span>📅 Calendar and schedule</span>
+          </button>
+          <button class="pill-btn discover-btn" data-action="research">
+            <span>🔍 Discover</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Side Preview Panel - FLUSH & RESIZABLE -->
+    <div class="preview-panel" id="previewPanel">
+      <div class="preview-resize-handle" id="previewResizeHandle"></div>
+      
+      <div class="preview-header-bar">
+        <div class="preview-header-info">
+          <span class="preview-category-tag" id="previewCategory">TOOL PREVIEW</span>
+          <span class="preview-main-title" id="previewTitle">Result Preview</span>
+        </div>
+        <div class="preview-controls-right">
+          <button class="preview-ctrl-btn" id="fullscreenBtn" title="Toggle Fullscreen">⛶</button>
+          <button class="preview-ctrl-btn close-btn" id="closePreviewBtn" title="Close Preview">✕</button>
+        </div>
+      </div>
+
+      <div class="preview-iframe-wrapper">
+        <iframe id="previewIframe" class="preview-iframe" title="Interactive Tool Preview"></iframe>
+      </div>
+    </div>
+  </div>
+
+  <script src="./config.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>

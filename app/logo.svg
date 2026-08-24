@@ -1,0 +1,39 @@
+<svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="logoBgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ba8880" />
+      <stop offset="50%" stop-color="#ab7870" />
+      <stop offset="100%" stop-color="#96635c" />
+    </linearGradient>
+    <linearGradient id="logoDarkGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#5a504e" />
+      <stop offset="100%" stop-color="#433b3a" />
+    </linearGradient>
+  </defs>
+  <!-- Outer rounded square container -->
+  <rect width="100" height="100" rx="22" fill="url(#logoBgGrad)" />
+  
+  <!-- Inner white curved polygon shield -->
+  <path
+    d="M 50 18 C 60 18 78 28 81 38 C 84 46 84 54 81 62 C 78 72 60 82 50 82 C 40 82 22 72 19 62 C 16 54 16 46 19 38 C 22 28 40 18 50 18 Z"
+    fill="#ffffff"
+  />
+  
+  <!-- Left thick ring / donut -->
+  <circle
+    cx="35"
+    cy="50"
+    r="12.5"
+    stroke="url(#logoDarkGrad)"
+    stroke-width="6"
+    fill="none"
+  />
+  
+  <!-- Right solid circle -->
+  <circle
+    cx="63"
+    cy="50"
+    r="7.5"
+    fill="url(#logoDarkGrad)"
+  />
+</svg>
