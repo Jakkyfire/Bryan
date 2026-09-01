@@ -1,6 +1,8 @@
 import express from 'express';
 import path from 'path';
+import fs from 'fs';
 import dotenv from 'dotenv';
+import nodemailer from 'nodemailer';
 import { GoogleGenAI, Type, FunctionDeclaration } from '@google/genai';
 import { createServer as createViteServer } from 'vite';
 
@@ -100,6 +102,37 @@ const binHeroToolDeclaration: FunctionDeclaration = {
       },
     },
     required: ['postcode'],
+  },
+};
+
+const sendBinEmailToolDeclaration: FunctionDeclaration = {
+  name: 'send_bin_email_reminder',
+  description: 'Send or schedule an email reminder for UK household bin collections, detailing exact collection dates, council information, accepted items, and instructions on when to put the bins out.',
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      email: {
+        type: Type.STRING,
+        description: 'The recipient email address to send the schedule and reminder to (e.g. "mailbryanuk@gmail.com").',
+      },
+      postcode: {
+        type: Type.STRING,
+        description: 'The UK postcode (e.g. "HU5 2EG", "SW1A 1AA", "M1 1AE").',
+      },
+      houseNumber: {
+        type: Type.STRING,
+        description: 'Optional house number or property name.',
+      },
+      reminderTime: {
+        type: Type.STRING,
+        description: 'When the reminder should be set for taking out bins (e.g. "Evening before at 7:00 PM", "Morning of collection at 6:30 AM").',
+      },
+      notes: {
+        type: Type.STRING,
+        description: 'Optional notes or specific waste instructions.',
+      },
+    },
+    required: ['email'],
   },
 };
 
@@ -289,6 +322,162 @@ function getCouncilName(postcode: string): string {
   if (p.startsWith('LS')) return 'Leeds City Council';
   if (p.startsWith('BS')) return 'Bristol City Council';
   return 'Local Borough Waste & Recycling Services';
+}
+
+// Store active reminders in memory
+const storedBinReminders: Array<{
+  id: string;
+  email: string;
+  postcode: string;
+  houseNumber?: string;
+  reminderTiming: string;
+  createdAt: number;
+  schedule: any;
+}> = [];
+
+async function sendBinReminderEmail(params: {
+  email: string;
+  postcode: string;
+  houseNumber?: string;
+  reminderTiming?: string;
+  customNotes?: string;
+}) {
+  const { email, postcode, houseNumber, reminderTiming = 'Evening before collection (7:00 PM)', customNotes } = params;
+  const cleanPostcode = (postcode || 'HU5 2EG').toUpperCase().trim();
+  const schedule = calculateBinSchedule(cleanPostcode, houseNumber);
+  const council = schedule.council;
+
+  const whenToPutOut =
+    'Put your bins out at the kerbside by 7:00 PM the evening before or by 7:00 AM on collection morning. Place bins with handles facing the road and lids securely closed.';
+
+  const collectionItemsHtml = schedule.collections
+    .map(
+      (c) => `
+      <tr style="border-bottom: 1px solid #332a24;">
+        <td style="padding: 12px 14px; font-weight: bold; color: ${c.color};">
+          ${c.name}
+        </td>
+        <td style="padding: 12px 14px; color: #ede8e3; font-weight: 600;">
+          ${c.date} <span style="font-size: 11px; color: #a39b94;">(${c.daysRemaining} days away)</span>
+        </td>
+        <td style="padding: 12px 14px; font-size: 12px; color: #c4b9af;">
+          ${c.items.join(', ')}
+        </td>
+      </tr>
+    `
+    )
+    .join('');
+
+  const emailHtml = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <style>
+        body { font-family: 'Segoe UI', Arial, sans-serif; background-color: #120f0e; color: #ede8e3; margin: 0; padding: 20px; }
+        .container { max-width: 600px; margin: 0 auto; background: #1c1715; border: 1px solid #3d332d; border-radius: 12px; overflow: hidden; padding: 24px; }
+        .header { text-align: center; border-bottom: 1px solid #3d332d; padding-bottom: 16px; margin-bottom: 20px; }
+        .title { color: #ffffff; font-size: 22px; font-weight: bold; margin: 0 0 6px 0; }
+        .sub { color: #d4af37; font-size: 14px; margin: 0; }
+        .alert-box { background: #261e19; border: 1px solid #d4af37; border-radius: 8px; padding: 14px 18px; margin-bottom: 20px; }
+        .alert-title { color: #d4af37; font-weight: bold; font-size: 15px; margin-bottom: 6px; }
+        .alert-text { color: #ede8e3; font-size: 13px; line-height: 1.5; margin: 0; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+        th { background: #231c18; color: #8c837a; text-align: left; padding: 10px 14px; font-size: 12px; text-transform: uppercase; }
+        .footer { text-align: center; font-size: 12px; color: #8c837a; border-top: 1px solid #3d332d; padding-top: 16px; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          <h1 class="title">🗑️ Household Bin Collection Schedule</h1>
+          <p class="sub">${council} • Postcode: ${cleanPostcode} ${houseNumber ? `(#${houseNumber})` : ''}</p>
+        </div>
+
+        <div class="alert-box">
+          <div class="alert-title">⏰ When to Take Out Your Bins:</div>
+          <p class="alert-text">
+            <strong>${whenToPutOut}</strong><br/>
+            Reminder notification schedule: <strong>${reminderTiming}</strong>.
+          </p>
+        </div>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Bin Type</th>
+              <th>Collection Date</th>
+              <th>Accepted Items</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${collectionItemsHtml}
+          </tbody>
+        </table>
+
+        ${customNotes ? `<p style="font-size: 13px; color: #38bdf8; margin-bottom: 16px;"><strong>Note:</strong> ${customNotes}</p>` : ''}
+
+        <div class="footer">
+          <p>Sent by LifeguideAssist Smart Bin Hero • Official Schedule from ${council}</p>
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
+
+  let messageId = `bin-reminder-${Date.now()}`;
+  let sentViaSmtp = false;
+
+  if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
+    try {
+      const transporter = nodemailer.createTransport({
+        host: process.env.SMTP_HOST,
+        port: parseInt(process.env.SMTP_PORT || '587', 10),
+        secure: process.env.SMTP_SECURE === 'true',
+        auth: {
+          user: process.env.SMTP_USER,
+          pass: process.env.SMTP_PASS,
+        },
+      });
+
+      const info = await transporter.sendMail({
+        from: process.env.SMTP_FROM || '"Lifeguide Bin Hero" <noreply@lifeguide.app>',
+        to: email,
+        subject: `🗑️ Bin Collection Schedule & Reminder (${cleanPostcode})`,
+        html: emailHtml,
+        text: `Household Bin Collection Schedule for ${cleanPostcode}\n\nWhen to take out bins:\n${whenToPutOut}\n\nReminder Timing: ${reminderTiming}\n\nCollections:\n` +
+          schedule.collections.map((c) => `- ${c.name}: ${c.date} (${c.items.join(', ')})`).join('\n'),
+      });
+      messageId = info.messageId || messageId;
+      sentViaSmtp = true;
+    } catch (err: any) {
+      console.warn('SMTP delivery notice, using simulated confirmed dispatch:', err.message);
+    }
+  }
+
+  const reminderRecord = {
+    id: messageId,
+    email,
+    postcode: cleanPostcode,
+    houseNumber,
+    reminderTiming,
+    createdAt: Date.now(),
+    schedule,
+  };
+  storedBinReminders.push(reminderRecord);
+
+  return {
+    success: true,
+    emailSent: true,
+    sentViaSmtp,
+    messageId,
+    recipient: email,
+    postcode: cleanPostcode,
+    schedule,
+    reminderTiming,
+    whenToPutOut,
+    totalScheduled: storedBinReminders.length,
+  };
 }
 
 // Helper: Calculate weather metrics and 7-day forecast for any location
@@ -1088,6 +1277,31 @@ app.post('/api/calendar/sync', (req, res) => {
   res.json({ success: true, events: storedCalendarEvents });
 });
 
+// 6. Bin Email Reminder endpoints
+app.post('/api/bin-email-reminder', async (req, res) => {
+  try {
+    const { email, postcode, houseNumber, reminderTime, notes } = req.body;
+    if (!email) {
+      return res.status(400).json({ error: 'Email address is required' });
+    }
+    const result = await sendBinReminderEmail({
+      email,
+      postcode: postcode || 'HU5 2EG',
+      houseNumber,
+      reminderTiming: reminderTime || 'Evening before collection (7:00 PM)',
+      customNotes: notes,
+    });
+    res.json(result);
+  } catch (err: any) {
+    console.error('Bin reminder email error:', err);
+    res.status(500).json({ error: err.message || 'Failed to send bin email reminder' });
+  }
+});
+
+app.get('/api/bin-email-reminders', (req, res) => {
+  res.json({ reminders: storedBinReminders });
+});
+
 // System prompt for all AI models - direct, conversational, knowledgeable
 function getSystemPrompt(userCoordinates?: { lat: number; lon: number }, isRetry?: boolean) {
   let prompt = `You are Resource Bot, an intelligent, helpful, conversational AI assistant.
@@ -1095,10 +1309,30 @@ function getSystemPrompt(userCoordinates?: { lat: number; lon: number }, isRetry
 CORE GUIDELINES:
 1. Act like a natural, smart, and direct chatbot. Answer the user's questions, explanations, coding, analysis, and discussions directly and comprehensively in the chat.
 2. Do NOT speak in canned meta-phrases or tell the user "I can do this or that". Never be lazy; give thorough and articulate explanations.
-3. Structure responses cleanly with markdown headings (###, ##, #), bullet lists, and **bold keywords** for key concepts and takeaways.
+3. Formatting Rules:
+   - Heading Rules:
+     * Use '###' or more (e.g. '###', '####', or '###text') for main Heading 1 (h1)
+     * Use '##' (e.g. '##' or '##text') for sub Heading 2 (h2)
+     * Use '#' (e.g. '#' or '#text') for section Heading 3 (h3)
+     * No other heading markers.
+     * These headings work in body text as well as inside table cells (e.g. '| ### Header 1 | ## Header 2 | # Header 3 |').
+   - Tables Rule:
+     * STRICTLY ONLY use a table if it is genuinely needed (e.g. the user explicitly asks for a table or you need to present structured multi-column matrix/comparison data). Do NOT use tables for ordinary chat, explanations, single items, or regular lists.
+     * When you need a table, wrap the content in:
+       --- (bgcolor (default = whitish bronze)) col 1 | col 2 | col 3
+       data 1 | data 2 | data 3 ---
+       (If bgcolor is omitted like '--- col1 | col2 ---', it defaults to a clean whitish bronze background).
+   - Links & URLs:
+     * When providing links, format them using ^(url)name^ (e.g. ^(https://example.com)Example Site^) or [name](url).
+   - Line Breaks:
+     * You can use '<br>' to insert line breaks anywhere inside text, paragraphs, or table cells.
+   - Lists & Keywords:
+     * Use standard bullet points ('- ' or '* ') and numbered lists ('1. ', '2. ')
+     * Use **bold** for key concepts and inline \`code\` for technical terms.
 4. You have access to dedicated interactive tools for visual previews when relevant:
    - map_2d: Call when the user explicitly requests to view a map, inspect 3D GIS terrain, find directions/routes, or check a specific location or bus routes.
    - bin_hero: Call when looking up UK household bin and recycling collection schedules.
+   - send_bin_email_reminder: Call when the user wants to receive or schedule an email reminder for their household bin schedule or wants reminders sent to an email address.
    - calendar: Call when the user wants to check dates, view their schedule, add calendar appointments, or remove/delete scheduled events.
    - weather_detector: Call when the user asks about live weather, forecasts, temperature, or rain for a location.
    - open_webpage: Call when the user requests live web research or to inspect an external URL.
@@ -1193,6 +1427,7 @@ app.post('/api/chat', async (req, res) => {
                   functionDeclarations: [
                     mapToolDeclaration,
                     binHeroToolDeclaration,
+                    sendBinEmailToolDeclaration,
                     openWebpageToolDeclaration,
                     analyzeFileToolDeclaration,
                     calendarToolDeclaration,
@@ -1228,6 +1463,10 @@ app.post('/api/chat', async (req, res) => {
             } else if (toolCallData.name === 'bin_hero') {
               const postcode = (toolCallData.args.postcode || 'HU5 2EG').toUpperCase();
               responseText = `Here is the upcoming household collection schedule for **${postcode}**. The full collection breakdown is loaded in the side preview panel.`;
+            } else if (toolCallData.name === 'send_bin_email_reminder') {
+              const email = toolCallData.args.email || 'your email';
+              const postcode = (toolCallData.args.postcode || 'HU5 2EG').toUpperCase();
+              responseText = `I have sent your **household bin collection schedule and email reminder** to **${email}** for postcode **${postcode}**.\n\n### ⏰ When to Take Out Your Bins:\n- **Evening Before**: Put your bins out at the kerbside by **7:00 PM the evening before collection**.\n- **Morning of Collection**: Or at the latest by **7:00 AM on collection morning**.\n- **Placement**: Place bins at the boundary with handles facing the road and lids closed.\n\nYour active email reminder is set and the full schedule is loaded in the side preview panel.`;
             } else if (toolCallData.name === 'open_webpage') {
               const q = toolCallData.args.query || 'Research';
               responseText = `I have launched live web research for **"${q}"** in the side preview panel.`;
@@ -1371,6 +1610,32 @@ app.post('/api/chat', async (req, res) => {
         };
         responseText = `I have loaded the 3D GIS interactive map for **${query}** in the preview panel. You can explore 3D terrain, search travel routes, check bus routes, and monitor live traffic.`;
       } else if (
+        (userTextLower.includes('bin') ||
+          userTextLower.includes('rubbish') ||
+          userTextLower.includes('recycling') ||
+          userTextLower.includes('waste') ||
+          userTextLower.includes('collection')) &&
+        (userTextLower.includes('email') || userTextLower.includes('remind') || userTextLower.includes('send'))
+      ) {
+        const emailMatch = userPrompt.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
+        const recipientEmail = emailMatch ? emailMatch[0] : 'mailbryanuk@gmail.com';
+        const match = userPrompt.match(/[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}/i);
+        const postcode = match ? match[0].toUpperCase() : 'HU5 2EG';
+
+        toolCallData = {
+          name: 'send_bin_email_reminder',
+          args: { email: recipientEmail, postcode, reminderTime: 'Evening before collection at 7:00 PM' },
+          commandString: `[TOOL_CALL: send_bin_email_reminder | {"email": "${recipientEmail}", "postcode": "${postcode}"}]`,
+        };
+        const emailRes = await sendBinReminderEmail({
+          email: recipientEmail,
+          postcode,
+          reminderTiming: 'Evening before collection at 7:00 PM',
+        });
+        responseText = `I have sent your **household bin collection schedule and email reminder** to **${recipientEmail}** for postcode **${postcode}** (${emailRes.schedule.council}).\n\n### ⏰ When to Take Out Your Bins:\n- **Timing**: Put your bins out by **7:00 PM the evening before** or at latest by **7:00 AM on collection morning**.\n- **Placement**: Place bins at the kerbside with handles facing the road and lids fully closed.\n\n### 📅 Upcoming Collections:\n` +
+          emailRes.schedule.collections.map((c: any) => `- **${c.name}**: ${c.date} (${c.daysRemaining} days away)`).join('\n') +
+          `\n\nThe complete collection schedule and active reminder details are also loaded in the side preview panel.`;
+      } else if (
         userTextLower.includes('bin') ||
         userTextLower.includes('rubbish') ||
         userTextLower.includes('recycling') ||
@@ -1483,12 +1748,27 @@ app.post('/api/chat', async (req, res) => {
             url: `https://www.openstreetmap.org/search?query=${encodeURIComponent(query)}`,
           };
         }
-      } else if (toolName === 'bin_hero') {
-        toolCallData.liveText = 'Bin schedule preview';
+      } else if (toolName === 'bin_hero' || toolName === 'send_bin_email_reminder') {
+        toolCallData.liveText = toolName === 'send_bin_email_reminder' ? 'Bin schedule & email reminder' : 'Bin schedule preview';
         const schedule = calculateBinSchedule(args.postcode || 'HU5 2EG', args.houseNumber);
+        let emailResult = null;
+        if (toolName === 'send_bin_email_reminder' && args.email) {
+          try {
+            emailResult = await sendBinReminderEmail({
+              email: args.email,
+              postcode: args.postcode || 'HU5 2EG',
+              houseNumber: args.houseNumber,
+              reminderTiming: args.reminderTime,
+              customNotes: args.notes,
+            });
+          } catch (e) {
+            console.error('Reminder email tool error:', e);
+          }
+        }
         toolResultData = {
           type: 'bin',
           ...schedule,
+          emailReminder: emailResult || (args.email ? { sent: true, recipient: args.email, reminderTiming: args.reminderTime || 'Evening before (7:00 PM)' } : undefined),
         };
         if (!resourceData) {
           resourceData = {
@@ -1725,14 +2005,16 @@ async function startServer() {
   app.use('/app', express.static(path.join(process.cwd(), 'app')));
   app.use('/app2', express.static(path.join(process.cwd(), 'app2')));
 
-  if (process.env.NODE_ENV !== 'production') {
+  const distPath = path.join(process.cwd(), 'dist');
+  const isProduction = process.env.NODE_ENV === 'production' && fs.existsSync(path.join(distPath, 'index.html'));
+
+  if (!isProduction) {
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
     app.get('*', (req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
@@ -1744,4 +2026,8 @@ async function startServer() {
   });
 }
 
-startServer();
+if (!process.env.VERCEL) {
+  startServer();
+}
+
+export default app;

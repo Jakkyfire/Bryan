@@ -59,3 +59,12 @@ export interface BinScheduleItem {
   color: string;
   items: string[];
 }
+
+export interface ChatSession {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  messages: Message[];
+  previewContent?: PreviewContent | null;
+}
