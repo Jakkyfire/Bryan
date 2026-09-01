@@ -168,8 +168,8 @@
       // 1. If user provided a Gemini API Key in config.js / secrets, use direct browser-to-Gemini
       if (window.LIFEGUIDE_CONFIG && window.LIFEGUIDE_CONFIG.GEMINI_API_KEY) {
         try {
-          const apiKey = window.LIFEGUIDE_CONFIG.GEMINI_API_KEY;
-          const modelName = window.LIFEGUIDE_CONFIG.GEMINI_MODEL || 'gemini-2.5-flash';
+          const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+          const modelName = window.LIFEGUIDE_CONFIG.VITE_GEMINI_MODEL || 'gemini-2.5-flash';
           const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
           
           const gRes = await fetch(geminiUrl, {
