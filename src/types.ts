@@ -71,6 +71,7 @@ export interface ChatSession {
 }
 
 export interface UserSettings {
+  theme?: 'light' | 'dark';
   model: string;
   userName: string;
   userEmail: string;

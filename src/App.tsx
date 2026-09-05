@@ -802,6 +802,7 @@ export default function App() {
           m = 'gemini-3.7-flash';
         }
         return {
+          theme: parsed.theme || 'light',
           model: m,
           userName: parsed.userName !== undefined ? parsed.userName : 'Bryan',
           userEmail: parsed.userEmail || '',
@@ -822,6 +823,7 @@ export default function App() {
       console.error('Failed to load user settings:', e);
     }
     return {
+      theme: 'light',
       model: 'gemini-3.7-flash',
       userName: 'Bryan',
       userEmail: '',
@@ -839,11 +841,18 @@ export default function App() {
     };
   });
 
-  // Apply darkness theme to document
+  // Apply theme mode and darkness theme to document
   useEffect(() => {
-    const darkness = userSettings?.darkness || 'espresso';
-    document.documentElement.setAttribute('data-darkness', darkness);
-  }, [userSettings?.darkness]);
+    const theme = userSettings?.theme || 'light';
+    document.documentElement.setAttribute('data-theme', theme);
+    document.body.className = theme === 'light' ? 'light-theme' : 'dark-theme';
+    if (theme === 'dark') {
+      const darkness = userSettings?.darkness || 'espresso';
+      document.documentElement.setAttribute('data-darkness', darkness);
+    } else {
+      document.documentElement.removeAttribute('data-darkness');
+    }
+  }, [userSettings?.theme, userSettings?.darkness]);
 
   const handleToggleSidebar = (targetState?: boolean) => {
     setIsSidebarOpen((prev) => {
@@ -886,10 +895,26 @@ export default function App() {
     setIsOnboardingOpen(false);
   };
 
-  const filteredSessions = useMemo(() => {
-    if (!searchQuery.trim()) return chatSessions;
+  const { recentSessions, allTimesSessions, filteredSessions } = useMemo(() => {
     const q = searchQuery.toLowerCase().trim();
-    return chatSessions.filter((s) => s.title.toLowerCase().includes(q));
+    const filtered = !q
+      ? chatSessions
+      : chatSessions.filter((s) => s.title.toLowerCase().includes(q));
+
+    const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
+    const recent: ChatSession[] = [];
+    const allTimes: ChatSession[] = [];
+
+    filtered.forEach((s) => {
+      const time = s.updatedAt || s.createdAt || 0;
+      if (time >= oneDayAgo) {
+        recent.push(s);
+      } else {
+        allTimes.push(s);
+      }
+    });
+
+    return { recentSessions: recent, allTimesSessions: allTimes, filteredSessions: filtered };
   }, [chatSessions, searchQuery]);
 
   const handleSaveSettings = (newSettings: UserSettings) => {
@@ -3836,8 +3861,28 @@ export default function App() {
   const activeSession = chatSessions.find((s) => s.id === currentSessionId);
   const activeChatTitle = activeSession?.title || (messages.length > 0 ? messages[0].content.slice(0, 32) : 'LifeGuide Assist');
 
+  if (isSettingsOpen) {
+    return (
+      <div className={`settings-page-view ${userSettings.theme === 'dark' ? 'dark-theme' : 'light-theme'}`}>
+        <SettingsPage
+          settings={userSettings}
+          chatSessions={chatSessions}
+          onSave={handleSaveSettings}
+          onClose={() => setIsSettingsOpen(false)}
+          onClearHistory={() => {
+            setChatSessions([]);
+            try {
+              localStorage.removeItem('lifeguide_chat_sessions_v1');
+            } catch (e) {}
+            handleNewChat();
+          }}
+        />
+      </div>
+    );
+  }
+
   return (
-    <div className={`app-viewport ${isPreviewOpen ? 'preview-active-state' : ''}`}>
+    <div className={`app-viewport ${isPreviewOpen ? 'preview-active-state' : ''} ${userSettings.theme === 'dark' ? 'dark-theme' : 'light-theme'}`}>
       {/* Dynamic Ambient Soul Background Aura (Enhanced Depth & Radiance) */}
       <div className="soul-ambient-auras" aria-hidden="true">
         <div className="soul-orb soul-orb-1" />
@@ -3879,26 +3924,10 @@ export default function App() {
               </button>
             </div>
 
-            {/* New Conversation Button (Cream/Sand Pill) */}
-            <div className="sidebar-action-wrap">
-              <button
-                type="button"
-                className="sidebar-new-conv-btn"
-                id="sidebarNewConvBtn"
-                onClick={handleNewChat}
-              >
-                <MessageSquarePlus style={{ width: 17, height: 17 }} />
-                <span>New conversation</span>
-              </button>
-            </div>
-
-            {/* History Section Header & Search Box */}
-            <div className="sidebar-history-top">
-              <div className="sidebar-section-header">
-                <span className="sidebar-section-title-text">HISTORY</span>
-                <span className="sidebar-count-num">{chatSessions.length}</span>
-              </div>
-              <div className="sidebar-search-box">
+            {/* Sidebar Top Stack: Search History on top of New conversation, Join Discord at top of New conversation */}
+            <div className="sidebar-top-stack">
+              {/* Search History Input on top of New Conversation */}
+              <div className="sidebar-search-box" id="sidebarSearchBox">
                 <Search style={{ width: 14, height: 14, color: '#8c837a' }} />
                 <input
                   type="text"
@@ -3906,6 +3935,7 @@ export default function App() {
                   placeholder="Search history..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
+                  id="sidebarSearchInput"
                 />
                 {searchQuery && (
                   <button
@@ -3918,42 +3948,112 @@ export default function App() {
                   </button>
                 )}
               </div>
+
+              {/* Join Discord Button on the sidebar at top of New conversation */}
+              <a
+                href="https://discord.gg/zVma3cFVf"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="sidebar-discord-btn"
+                id="sidebarDiscordBtn"
+                title="Join Discord Server"
+              >
+                <svg className="discord-icon" width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515a.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0a12.64 12.64 0 0 0-.617-1.25a.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057a19.9 19.9 0 0 0 5.993 3.03a.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994.021-.041.001-.09-.041-.106a13.107 13.107 0 0 1-1.872-.892a.077.077 0 0 1-.008-.128a10.2 10.2 0 0 0 .372-.292a.074.074 0 0 1 .077-.01c3.929 1.793 8.18 1.793 12.061 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127a12.299 12.299 0 0 1-1.873.894a.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028a19.839 19.839 0 0 0 6.002-3.03a.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.028zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/>
+                </svg>
+                <span>Join Discord Server</span>
+              </a>
+
+              {/* New Conversation Button */}
+              <button
+                type="button"
+                className="sidebar-new-conv-btn"
+                id="sidebarNewConvBtn"
+                onClick={handleNewChat}
+              >
+                <MessageSquarePlus style={{ width: 17, height: 17 }} />
+                <span>New conversation</span>
+              </button>
             </div>
 
-            {/* Sessions List */}
+            {/* History Section Grouped in RECENTS and ALL TIMES */}
             <div className="sidebar-sessions-list" id="sidebarSessionsList">
-              {filteredSessions.length === 0 ? (
+              {recentSessions.length === 0 && allTimesSessions.length === 0 ? (
                 <div className="sidebar-empty-state">
                   <MessageSquare style={{ width: 22, height: 22, opacity: 0.35, marginBottom: 6 }} />
                   <span>{searchQuery ? 'No matching history found' : 'No history yet'}</span>
                   <p>{searchQuery ? 'Try a different search term.' : 'Your conversations will appear here automatically.'}</p>
                 </div>
               ) : (
-                filteredSessions.map((session) => {
-                  const isActive = session.id === currentSessionId && messages.length > 0;
-                  return (
-                    <div
-                      key={session.id}
-                      className={`sidebar-session-item ${isActive ? 'active' : ''}`}
-                      onClick={() => handleSelectSession(session)}
-                      title={session.title}
-                    >
-                      <span className="sidebar-session-title">{session.title}</span>
-                      <button
-                        type="button"
-                        className="sidebar-session-more"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setSelectedSessionForModal(session);
-                          setIsSessionModalOpen(true);
-                        }}
-                        title="Chat options"
-                      >
-                        <MoreHorizontal style={{ width: 14, height: 14 }} />
-                      </button>
+                <>
+                  {recentSessions.length > 0 && (
+                    <div className="sidebar-group-section">
+                      <div className="sidebar-group-header">
+                        <span className="sidebar-group-title">RECENTS</span>
+                        <span className="sidebar-count-num">{recentSessions.length}</span>
+                      </div>
+                      {recentSessions.map((session) => {
+                        const isActive = session.id === currentSessionId && messages.length > 0;
+                        return (
+                          <div
+                            key={session.id}
+                            className={`sidebar-session-item ${isActive ? 'active' : ''}`}
+                            onClick={() => handleSelectSession(session)}
+                            title={session.title}
+                          >
+                            <span className="sidebar-session-title">{session.title}</span>
+                            <button
+                              type="button"
+                              className="sidebar-session-more"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSelectedSessionForModal(session);
+                                setIsSessionModalOpen(true);
+                              }}
+                              title="Chat options"
+                            >
+                              <MoreHorizontal style={{ width: 14, height: 14 }} />
+                            </button>
+                          </div>
+                        );
+                      })}
                     </div>
-                  );
-                })
+                  )}
+
+                  {allTimesSessions.length > 0 && (
+                    <div className="sidebar-group-section">
+                      <div className="sidebar-group-header">
+                        <span className="sidebar-group-title">ALL TIMES</span>
+                        <span className="sidebar-count-num">{allTimesSessions.length}</span>
+                      </div>
+                      {allTimesSessions.map((session) => {
+                        const isActive = session.id === currentSessionId && messages.length > 0;
+                        return (
+                          <div
+                            key={session.id}
+                            className={`sidebar-session-item ${isActive ? 'active' : ''}`}
+                            onClick={() => handleSelectSession(session)}
+                            title={session.title}
+                          >
+                            <span className="sidebar-session-title">{session.title}</span>
+                            <button
+                              type="button"
+                              className="sidebar-session-more"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSelectedSessionForModal(session);
+                                setIsSessionModalOpen(true);
+                              }}
+                              title="Chat options"
+                            >
+                              <MoreHorizontal style={{ width: 14, height: 14 }} />
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </>
               )}
             </div>
 
@@ -4878,23 +4978,6 @@ export default function App() {
           )}
         </div>
       </div>
-
-      {/* Dedicated Settings Page (Full-screen grouped containers view) */}
-      {isSettingsOpen && (
-        <SettingsPage
-          settings={userSettings}
-          chatSessions={chatSessions}
-          onSave={handleSaveSettings}
-          onClose={() => setIsSettingsOpen(false)}
-          onClearHistory={() => {
-            setChatSessions([]);
-            try {
-              localStorage.removeItem('lifeguide_chat_sessions_v1');
-            } catch (e) {}
-            handleNewChat();
-          }}
-        />
-      )}
 
       {/* Chat History Options Modal - Overlaps whole page with background blur */}
       {isSessionModalOpen && selectedSessionForModal && (

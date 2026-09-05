@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   ArrowLeft,
   Check,
@@ -7,6 +7,7 @@ import {
   Mail,
   MapPin,
   Moon,
+  Sun,
   Palette,
   Sliders,
   Type,
@@ -18,6 +19,7 @@ import {
   RotateCcw,
   Sparkles,
   Info,
+  AlertTriangle,
 } from 'lucide-react';
 import { UserSettings, ChatSession } from '../types';
 
@@ -37,6 +39,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   onClearHistory,
 }) => {
   const [formData, setFormData] = useState<UserSettings>({
+    theme: settings.theme || 'light',
     model: settings.model && !settings.model.includes('2.5') && !settings.model.includes('2.0') && !settings.model.includes('1.5') ? settings.model : 'gemini-3.7-flash',
     userName: settings.userName !== undefined ? settings.userName : 'Bryan',
     userEmail: settings.userEmail || '',
@@ -55,26 +58,59 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
 
   const [savedToast, setSavedToast] = useState(false);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [showUnsavedWarning, setShowUnsavedWarning] = useState(false);
+
+  // Check if form has unsaved modifications
+  const isDirty = useMemo(() => {
+    return JSON.stringify(formData) !== JSON.stringify(settings);
+  }, [formData, settings]);
 
   const handleFieldChange = <K extends keyof UserSettings>(key: K, value: UserSettings[K]) => {
     setFormData((prev) => {
       const updated = { ...prev, [key]: value };
+      // If theme changed, immediately apply preview attribute
+      if (key === 'theme') {
+        document.documentElement.setAttribute('data-theme', String(value));
+        document.body.className = value === 'light' ? 'light-theme' : 'dark-theme';
+        if (value === 'dark') {
+          document.documentElement.setAttribute('data-darkness', updated.darkness || 'espresso');
+          document.body.setAttribute('data-darkness', updated.darkness || 'espresso');
+        } else {
+          document.documentElement.removeAttribute('data-darkness');
+          document.body.removeAttribute('data-darkness');
+        }
+      }
       // If darkness changed, immediately apply preview attribute
       if (key === 'darkness') {
         document.documentElement.setAttribute('data-darkness', String(value));
+        document.body.setAttribute('data-darkness', String(value));
+      }
+      // If accent changed, immediately apply preview attribute
+      if (key === 'accentColor') {
+        document.documentElement.setAttribute('data-accent', String(value));
+        document.body.setAttribute('data-accent', String(value));
       }
       return updated;
     });
+  };
+
+  const handleAttemptClose = () => {
+    if (isDirty) {
+      setShowUnsavedWarning(true);
+      return;
+    }
+    onClose();
   };
 
   const handleSubmit = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     onSave(formData);
     setSavedToast(true);
+    setShowUnsavedWarning(false);
     setTimeout(() => {
       setSavedToast(false);
       onClose();
-    }, 800);
+    }, 450);
   };
 
   const handleExportJSON = () => {
@@ -109,6 +145,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
 
   const handleResetDefaults = () => {
     const defaults: UserSettings = {
+      theme: 'light',
       model: 'gemini-3.7-flash',
       userName: 'Bryan',
       userEmail: '',
@@ -125,19 +162,24 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
       enableSuggestions: true,
     };
     setFormData(defaults);
+    document.documentElement.setAttribute('data-theme', 'light');
+    document.body.className = 'light-theme';
     document.documentElement.setAttribute('data-darkness', 'espresso');
+    document.body.setAttribute('data-darkness', 'espresso');
+    document.documentElement.setAttribute('data-accent', 'gold');
+    document.body.setAttribute('data-accent', 'gold');
   };
 
   return (
     <div className="settings-page-wrapper" id="settingsPage">
-      {/* Top Header */}
+      {/* Top Header without Save Changes button (Save is only in the bottom bar as requested) */}
       <header className="settings-page-header">
         <div className="settings-header-left">
           <button
             type="button"
             className="settings-back-btn"
             id="settingsBackBtn"
-            onClick={onClose}
+            onClick={handleAttemptClose}
             title="Return to Chat"
           >
             <ArrowLeft style={{ width: 16, height: 16 }} />
@@ -147,24 +189,6 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
             <h1 className="settings-page-main-title">Settings & Preferences</h1>
             <p className="settings-page-sub-title">Configure AI engine, theme darkness, regional defaults & privacy</p>
           </div>
-        </div>
-
-        <div className="settings-header-actions">
-          <button
-            type="button"
-            className="settings-page-save-btn"
-            id="settingsSaveHeaderBtn"
-            onClick={handleSubmit}
-          >
-            {savedToast ? (
-              <>
-                <Check style={{ width: 15, height: 15 }} />
-                <span>Saved!</span>
-              </>
-            ) : (
-              <span>Save Changes</span>
-            )}
-          </button>
         </div>
       </header>
 
@@ -268,38 +292,83 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
             </div>
 
             <div className="settings-fields-stack">
-              {/* Theme Darkness Level */}
+              {/* Theme Mode Selector (Light vs Dark) */}
               <div className="settings-field-row vertical-control">
                 <div className="settings-field-meta">
-                  <label className="settings-field-label">Darkness Preset</label>
-                  <span className="settings-field-sub">Choose your preferred canvas depth from pitch black to dark slate.</span>
+                  <label className="settings-field-label">Interface Theme Mode</label>
+                  <span className="settings-field-sub">Choose between standard clean Light Mode (Default) or immersive Dark Mode.</span>
                 </div>
-                <div className="settings-darkness-selector">
-                  {[
-                    { id: 'pitch', label: 'Pitch Black', hex: '#000000', desc: '100% OLED Pure Black' },
-                    { id: 'oled', label: 'Deep Midnight', hex: '#090807', desc: '90% Midnight Obsidian' },
-                    { id: 'espresso', label: 'Dark Espresso', hex: '#15110e', desc: '75% Refined Warm (Default)' },
-                    { id: 'slate', label: 'Warm Slate', hex: '#1a1715', desc: '60% Graphite Charcoal' },
-                    { id: 'titanium', label: 'Titanium Dark', hex: '#201c1a', desc: '45% High Contrast Dark' },
-                  ].map((preset) => (
-                    <button
-                      key={preset.id}
-                      type="button"
-                      className={`darkness-preset-btn ${formData.darkness === preset.id ? 'active' : ''}`}
-                      onClick={() => handleFieldChange('darkness', preset.id as any)}
-                    >
-                      <div className="darkness-swatch" style={{ background: preset.hex }} />
-                      <div className="darkness-preset-info">
-                        <span className="darkness-preset-name">{preset.label}</span>
-                        <span className="darkness-preset-desc">{preset.desc}</span>
-                      </div>
-                      {formData.darkness === preset.id && (
-                        <Check style={{ width: 14, height: 14, color: '#d4af37', marginLeft: 'auto' }} />
-                      )}
-                    </button>
-                  ))}
+                <div className="settings-theme-mode-selector">
+                  <button
+                    type="button"
+                    className={`theme-mode-btn ${formData.theme !== 'dark' ? 'active' : ''}`}
+                    onClick={() => handleFieldChange('theme', 'light')}
+                  >
+                    <div className="theme-mode-icon-box light">
+                      <Sun style={{ width: 18, height: 18, color: '#f59e0b' }} />
+                    </div>
+                    <div className="theme-mode-info">
+                      <span className="theme-mode-title">Light Mode (Default)</span>
+                      <span className="theme-mode-sub">Crisp, clean, high-contrast light styling</span>
+                    </div>
+                    {formData.theme !== 'dark' && (
+                      <Check style={{ width: 16, height: 16, color: '#10b981', marginLeft: 'auto' }} />
+                    )}
+                  </button>
+
+                  <button
+                    type="button"
+                    className={`theme-mode-btn ${formData.theme === 'dark' ? 'active' : ''}`}
+                    onClick={() => handleFieldChange('theme', 'dark')}
+                  >
+                    <div className="theme-mode-icon-box dark">
+                      <Moon style={{ width: 18, height: 18, color: '#a78bfa' }} />
+                    </div>
+                    <div className="theme-mode-info">
+                      <span className="theme-mode-title">Dark Mode</span>
+                      <span className="theme-mode-sub">Deep, borderless dark tones for low-light focus</span>
+                    </div>
+                    {formData.theme === 'dark' && (
+                      <Check style={{ width: 16, height: 16, color: '#10b981', marginLeft: 'auto' }} />
+                    )}
+                  </button>
                 </div>
               </div>
+
+              {/* Theme Darkness Level (shown if dark mode selected or configured) */}
+              {formData.theme === 'dark' && (
+                <div className="settings-field-row vertical-control">
+                  <div className="settings-field-meta">
+                    <label className="settings-field-label">Darkness Preset</label>
+                    <span className="settings-field-sub">Choose your preferred dark canvas depth from pitch black to dark slate.</span>
+                  </div>
+                  <div className="settings-darkness-selector">
+                    {[
+                      { id: 'pitch', label: 'Pitch Black', hex: '#000000', desc: '100% OLED Pure Black' },
+                      { id: 'oled', label: 'Deep Midnight', hex: '#090807', desc: '90% Midnight Obsidian' },
+                      { id: 'espresso', label: 'Dark Espresso', hex: '#15110e', desc: '75% Refined Warm (Default)' },
+                      { id: 'slate', label: 'Warm Slate', hex: '#1a1715', desc: '60% Graphite Charcoal' },
+                      { id: 'titanium', label: 'Titanium Dark', hex: '#201c1a', desc: '45% High Contrast Dark' },
+                    ].map((preset) => (
+                      <button
+                        key={preset.id}
+                        type="button"
+                        className={`darkness-preset-btn ${formData.darkness === preset.id ? 'active' : ''}`}
+                        onClick={() => handleFieldChange('darkness', preset.id as any)}
+                      >
+                        <div className="darkness-swatch" style={{ background: preset.hex }} />
+                        <div className="darkness-preset-info">
+                          <span className="darkness-preset-name">{preset.label}</span>
+                          <span className="darkness-preset-desc">{preset.desc}</span>
+                        </div>
+                        {formData.darkness === preset.id && (
+                          <Check style={{ width: 14, height: 14, color: '#d4af37', marginLeft: 'auto' }} />
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {/* Accent Color */}
               <div className="settings-field-row">
@@ -632,7 +701,8 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
           <button
             type="button"
             className="settings-btn-cancel-large"
-            onClick={onClose}
+            id="settingsCancelBottomBtn"
+            onClick={handleAttemptClose}
           >
             Cancel
           </button>
@@ -653,6 +723,38 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Unsaved Changes Blocker Notification Popup */}
+      {showUnsavedWarning && (
+        <div className="settings-unsaved-warning-backdrop" id="unsavedWarningModal">
+          <div className="settings-unsaved-warning-card">
+            <div className="settings-unsaved-icon-wrap">
+              <AlertTriangle style={{ width: 24, height: 24 }} />
+            </div>
+            <h3 className="settings-unsaved-title">Unsaved Changes</h3>
+            <p className="settings-unsaved-text">
+              You must save your changes before leaving settings. Please click the <strong>Save & Apply Preferences</strong> button to preserve your changes.
+            </p>
+            <div className="settings-unsaved-actions">
+              <button
+                type="button"
+                className="settings-unsaved-save-btn"
+                id="warningSaveAndApplyBtn"
+                onClick={handleSubmit}
+              >
+                Save Changes Now
+              </button>
+              <button
+                type="button"
+                className="settings-unsaved-dismiss-btn"
+                onClick={() => setShowUnsavedWarning(false)}
+              >
+                Keep Editing
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
