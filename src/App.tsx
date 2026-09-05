@@ -42,10 +42,18 @@ import {
   PanelLeft,
   PanelLeftClose,
   MessageSquare,
+  MessageSquarePlus,
   Trash2,
   History,
+  Settings,
+  User,
+  Mail,
+  Cpu,
+  MoreHorizontal,
+  RotateCcw,
 } from 'lucide-react';
-import { Message, UserCoordinates, PreviewContent, AttachedFile, ChatSession } from './types';
+import { Message, UserCoordinates, PreviewContent, AttachedFile, ChatSession, UserSettings } from './types';
+import { SettingsPage } from './components/SettingsPage';
 
 let idCounter = 0;
 function generateId(prefix: string = 'msg'): string {
@@ -780,15 +788,146 @@ export default function App() {
     return [];
   });
   const [currentSessionId, setCurrentSessionId] = useState<string>(() => generateId('session'));
-  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(false);
+  const [searchQuery, setSearchQuery] = useState('');
+
+  // User Settings state
+  const [userSettings, setUserSettings] = useState<UserSettings>(() => {
+    try {
+      const saved = localStorage.getItem('lifeguide_user_settings_v1');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        let m = parsed.model || 'gemini-3.7-flash';
+        if (m.includes('2.5') || m.includes('2.0') || m.includes('1.5')) {
+          m = 'gemini-3.7-flash';
+        }
+        return {
+          model: m,
+          userName: parsed.userName !== undefined ? parsed.userName : 'Bryan',
+          userEmail: parsed.userEmail || '',
+          defaultLocation: parsed.defaultLocation || 'Liverpool, UK',
+          postcode: parsed.postcode || 'HU5 2EG',
+          darkness: parsed.darkness || 'espresso',
+          accentColor: parsed.accentColor || 'gold',
+          fontSize: parsed.fontSize || 'standard',
+          temperature: parsed.temperature ?? 0.7,
+          aiTone: parsed.aiTone || 'friendly',
+          timeFormat: parsed.timeFormat || '24h',
+          tempUnits: parsed.tempUnits || 'c',
+          enableToolGrounding: parsed.enableToolGrounding ?? true,
+          enableSuggestions: parsed.enableSuggestions ?? true,
+        };
+      }
+    } catch (e) {
+      console.error('Failed to load user settings:', e);
+    }
+    return {
+      model: 'gemini-3.7-flash',
+      userName: 'Bryan',
+      userEmail: '',
+      defaultLocation: 'Liverpool, UK',
+      postcode: 'HU5 2EG',
+      darkness: 'espresso',
+      accentColor: 'gold',
+      fontSize: 'standard',
+      temperature: 0.7,
+      aiTone: 'friendly',
+      timeFormat: '24h',
+      tempUnits: 'c',
+      enableToolGrounding: true,
+      enableSuggestions: true,
+    };
+  });
+
+  // Apply darkness theme to document
+  useEffect(() => {
+    const darkness = userSettings?.darkness || 'espresso';
+    document.documentElement.setAttribute('data-darkness', darkness);
+  }, [userSettings?.darkness]);
+
+  const handleToggleSidebar = (targetState?: boolean) => {
+    setIsSidebarOpen((prev) => {
+      const next = targetState !== undefined ? targetState : !prev;
+      try {
+        localStorage.setItem('lgpai_sidebar_open', String(next));
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+  };
+
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [tempSettings, setTempSettings] = useState<UserSettings>(userSettings);
+  const [settingsSavedToast, setSettingsSavedToast] = useState(false);
+
+  // First-time onboarding name modal state
+  const [isOnboardingOpen, setIsOnboardingOpen] = useState(() => {
+    try {
+      const hasPrompted = localStorage.getItem('lifeguide_first_time_name_set');
+      return !hasPrompted;
+    } catch {
+      return false;
+    }
+  });
+  const [onboardingNameInput, setOnboardingNameInput] = useState(userSettings.userName || 'Bryan');
+
+  const handleOnboardingSubmit = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const trimmed = onboardingNameInput.trim() || 'Bryan';
+    const updatedSettings = { ...userSettings, userName: trimmed };
+    setUserSettings(updatedSettings);
+    try {
+      localStorage.setItem('lifeguide_first_time_name_set', 'true');
+      localStorage.setItem('lifeguide_user_settings_v1', JSON.stringify(updatedSettings));
+    } catch (err) {
+      console.error(err);
+    }
+    setIsOnboardingOpen(false);
+  };
+
+  const filteredSessions = useMemo(() => {
+    if (!searchQuery.trim()) return chatSessions;
+    const q = searchQuery.toLowerCase().trim();
+    return chatSessions.filter((s) => s.title.toLowerCase().includes(q));
+  }, [chatSessions, searchQuery]);
+
+  const handleSaveSettings = (newSettings: UserSettings) => {
+    setUserSettings(newSettings);
+    try {
+      localStorage.setItem('lifeguide_user_settings_v1', JSON.stringify(newSettings));
+    } catch (e) {
+      console.error('Failed to persist user settings:', e);
+    }
+    setSettingsSavedToast(true);
+    setTimeout(() => setSettingsSavedToast(false), 2000);
+    setTimeout(() => setIsSettingsOpen(false), 450);
+  };
 
   // New feedback, reasoning, and UX states
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [ratings, setRatings] = useState<Record<string, 'up' | 'down'>>({});
   const [openThoughtIds, setOpenThoughtIds] = useState<Record<string, boolean>>({});
   const [isLiveThoughtsOpen, setIsLiveThoughtsOpen] = useState(false);
+  const [liveThoughtStep, setLiveThoughtStep] = useState<number>(0);
   const [isInputExpanded, setIsInputExpanded] = useState(false);
   const [typingMsgId, setTypingMsgId] = useState<string | null>(null);
+
+  // Ticking effect for live thinking & Bing web analysis steps
+  useEffect(() => {
+    let timer: any = null;
+    if (isGenerating) {
+      setLiveThoughtStep(0);
+      timer = setInterval(() => {
+        setLiveThoughtStep((prev) => (prev < 3 ? prev + 1 : prev));
+      }, 420);
+    } else {
+      setLiveThoughtStep(0);
+    }
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, [isGenerating]);
 
   // Dropdown popover states for Plus button and Tools button
   const [isFileMenuOpen, setIsFileMenuOpen] = useState(false);
@@ -1055,6 +1194,65 @@ export default function App() {
     if (window.innerWidth < 768) {
       setIsSidebarOpen(false);
     }
+  };
+
+  // Modal for chat history options (3-dots)
+  const [selectedSessionForModal, setSelectedSessionForModal] = useState<ChatSession | null>(null);
+  const [isSessionModalOpen, setIsSessionModalOpen] = useState(false);
+
+  // Download single chat session as formatted Markdown file
+  const handleDownloadChatSession = (session: ChatSession) => {
+    const sessionMessages = session.messages || [];
+    let md = `# ${session.title || 'LifeGuide Assist Chat'}\n`;
+    md += `*Exported on: ${new Date().toLocaleString()}*\n\n---\n\n`;
+    for (const m of sessionMessages) {
+      const roleLabel = m.role === 'user' ? (userSettings?.userName || 'User') : 'LifeGuide Assist AI';
+      const timeStr = m.timestamp ? new Date(m.timestamp).toLocaleTimeString() : '';
+      md += `### ${roleLabel}${timeStr ? ` (${timeStr})` : ''}\n\n`;
+      md += `${m.content}\n\n`;
+      if (m.toolResult) {
+        md += `> **Tool Executed**: ${m.toolResult.type}\n\n`;
+      }
+      md += `---\n\n`;
+    }
+    const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const safeTitle = (session.title || 'chat').replace(/[^a-z0-9]/gi, '_').toLowerCase().slice(0, 30);
+    a.download = `lifeguide-${safeTitle || 'conversation'}-${Date.now()}.md`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  // Reset chat session: clears all messages in this conversation
+  const handleResetChatSession = (session: ChatSession) => {
+    if (session.id === currentSessionId) {
+      setMessages([]);
+      setPreviewContent(null);
+      setIsPreviewOpen(false);
+    }
+    setChatSessions((prev) =>
+      prev.map((s) =>
+        s.id === session.id
+          ? { ...s, messages: [], previewContent: null, updatedAt: Date.now() }
+          : s
+      )
+    );
+    setIsSessionModalOpen(false);
+    setSelectedSessionForModal(null);
+  };
+
+  // Delete chat session from modal
+  const handleDeleteSessionFromModal = (sessionId: string) => {
+    setChatSessions((prev) => prev.filter((s) => s.id !== sessionId));
+    if (currentSessionId === sessionId) {
+      handleNewChat();
+    }
+    setIsSessionModalOpen(false);
+    setSelectedSessionForModal(null);
   };
 
   // Delete a single chat session
@@ -1590,6 +1788,7 @@ export default function App() {
           userCoordinates,
           attachedFiles: currentAttached,
           isRetry: Boolean(options?.isRetry),
+          userSettings,
         }),
       });
 
@@ -1609,6 +1808,7 @@ export default function App() {
         toolCall: data.toolCall,
         toolResult: data.toolResult,
         resource: data.resource,
+        resources: data.resources || (data.resource ? [data.resource] : undefined),
         rawCommand: data.rawCommand,
         thoughts: data.thoughts,
       };
@@ -1620,10 +1820,10 @@ export default function App() {
       // Keep active conversation nicely oriented from the prompt at the top
       scrollToActiveExchange('smooth');
 
-      // Google Gemini style word-by-word streaming
+      // Google Gemini style rapid word-by-word streaming
       const tokens = fullText.match(/\S+|\s+/g) || [fullText];
       let tokenIdx = 0;
-      const step = Math.max(1, Math.floor(tokens.length / 55));
+      const step = Math.max(3, Math.ceil(tokens.length / 26));
 
       typingTimerRef.current = setInterval(() => {
         tokenIdx += step;
@@ -1639,7 +1839,7 @@ export default function App() {
         setMessages((prev) =>
           prev.map((m) => (m.id === assistantId ? { ...m, content: currentSlice } : m))
         );
-      }, 22);
+      }, 10);
 
       // Populate smart follow-up suggestions for what the user could ask next (like Google AI Studio)
       if (Array.isArray(data.suggestions) && data.suggestions.length > 0) {
@@ -1657,17 +1857,23 @@ export default function App() {
         renderToolResultInPreview(data.toolResult, data.toolCall);
       }
     } catch (err: any) {
-      setIsGenerating(false);
       if (err.name !== 'AbortError') {
-        console.error('Chat error:', err);
-        const errMsg: Message = {
-          id: generateId('err'),
+        console.warn('Primary chat fetch error:', err);
+        const assistantId = generateId('assistant');
+        const assistantMessage: Message = {
+          id: assistantId,
           role: 'assistant',
-          content: `Error processing request: ${err.message}. Please try again.`,
+          content: `I encountered a connection error communicating with the AI service (${err?.message || 'Network error'}). Please try again in a moment.`,
           timestamp: Date.now(),
+          thoughts: [
+            `Step 1: Attempted to send prompt "${trimmed.slice(0, 45)}" to AI engine`,
+            `Step 2: Encountered network or server error`,
+            `Step 3: Ready for re-transmission`,
+          ],
         };
-        setMessages((prev) => [...prev, errMsg]);
-        scrollToTopOrBeginning('smooth');
+
+        setMessages((prev) => [...prev, assistantMessage]);
+        scrollToActiveExchange('smooth');
       }
     } finally {
       setIsGenerating(false);
@@ -1677,6 +1883,10 @@ export default function App() {
 
   // Client-side fallback suggestions generator (Google AI Studio style)
   const getClientFallbackSuggestions = (promptText: string, aiText: string, toolCallData?: any): string[] => {
+    // Disable suggestions on phone as requested
+    if (typeof window !== 'undefined' && window.innerWidth <= 768) {
+      return [];
+    }
     const pLower = (promptText || '').toLowerCase();
     if (toolCallData?.name === 'map_2d' || pLower.includes('map') || pLower.includes('locate') || pLower.includes('where is')) {
       const loc = toolCallData?.args?.query || 'this area';
@@ -2370,8 +2580,8 @@ export default function App() {
           .Purple{background:var(--purple); border:1px solid #c084fc;}
           .err { color:#f87171; }
 
-          /* Email Reminder Card */
-          .reminder-card { background: #181311; border: 1px solid #3d332d; border-radius: 10px; padding: 16px; margin-top: 16px; }
+          /* Email Reminder Card - Upcoming Feature */
+          .reminder-card { position: relative; background: #181311; border: 1px solid #3d332d; border-radius: 10px; padding: 16px; margin-top: 16px; overflow: hidden; }
           .reminder-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
           .reminder-title { font-size: 14px; font-weight: 700; color: #ffffff; display: flex; align-items: center; gap: 6px; }
           .reminder-sub { font-size: 12px; color: #a39b94; margin-bottom: 12px; }
@@ -2380,6 +2590,51 @@ export default function App() {
           .reminder-btn { background: #38bdf8; color: #082f49; font-weight: 700; border: none; padding: 10px 16px; border-radius: 8px; cursor: pointer; }
           .reminder-btn:hover { background: #7dd3fc; }
           .reminder-success { padding: 10px 12px; background: #064e3b; border: 1px solid #059669; border-radius: 8px; font-size: 12px; color: #a7f3d0; margin-top: 8px; display: none; }
+          
+          /* Upcoming Feature Blur & Loading Overlay */
+          .reminder-blurred-content { filter: blur(3.5px); opacity: 0.45; pointer-events: none; user-select: none; }
+          .reminder-upcoming-overlay {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background: rgba(23, 18, 16, 0.72);
+            backdrop-filter: blur(2px);
+            z-index: 10;
+            padding: 16px;
+            text-align: center;
+          }
+          .upcoming-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            background: rgba(217, 119, 6, 0.18);
+            border: 1px solid rgba(217, 119, 6, 0.4);
+            color: #fbbf24;
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            padding: 4px 12px;
+            border-radius: 9999px;
+            margin-bottom: 8px;
+          }
+          .upcoming-spinner {
+            width: 22px;
+            height: 22px;
+            border: 2.5px solid rgba(251, 191, 36, 0.2);
+            border-top-color: #fbbf24;
+            border-radius: 50%;
+            animation: upcomingSpin 1s linear infinite;
+            margin-bottom: 8px;
+          }
+          @keyframes upcomingSpin {
+            to { transform: rotate(360deg); }
+          }
+          .upcoming-title { font-size: 14px; font-weight: 700; color: #ffffff; margin-bottom: 4px; }
+          .upcoming-subtitle { font-size: 12px; color: #a39b94; max-width: 260px; }
         </style>
         </head>
         <body>
@@ -2403,25 +2658,33 @@ export default function App() {
           <div id="status">Loading collection dates…</div>
           <ul id="list"></ul>
 
-          <!-- Email Reminder Setup -->
+          <!-- Email Reminder Setup (Upcoming Feature with Blur & Loading Screen) -->
           <div class="reminder-card">
-            <div class="reminder-header">
-              <div class="reminder-title">📧 Email Reminder Alerts</div>
+            <div class="reminder-upcoming-overlay">
+              <div class="upcoming-spinner"></div>
+              <div class="upcoming-badge">🚀 Upcoming Feature</div>
+              <div class="upcoming-title">Send Email Reminders</div>
+              <div class="upcoming-subtitle">Automated household collection alerts and email delivery are currently in development.</div>
             </div>
-            <div class="reminder-sub">
-              Receive automated notifications with upcoming collection schedules and instructions so you never forget bin day.
-            </div>
-            <div class="reminder-form">
-              <div class="reminder-input-row">
-                <input id="reminderEmail" type="email" placeholder="mailbryanuk@gmail.com" value="mailbryanuk@gmail.com" required />
-                <select id="reminderTime" style="max-width: 180px; margin-bottom: 0;">
-                  <option value="Evening before at 7:00 PM">Evening before (7 PM)</option>
-                  <option value="Morning of collection at 6:30 AM">Morning of (6:30 AM)</option>
-                  <option value="24 hours before">24 hours before</option>
-                </select>
+
+            <div class="reminder-blurred-content">
+              <div class="reminder-header">
+                <div class="reminder-title">📧 Email Reminder Alerts</div>
               </div>
-              <button id="sendReminderBtn" class="reminder-btn" onclick="sendEmailReminder()">Set Email Reminder</button>
-              <div id="reminderSuccess" class="reminder-success"></div>
+              <div class="reminder-sub">
+                Receive automated notifications with upcoming collection schedules and instructions so you never forget bin day.
+              </div>
+              <div class="reminder-form">
+                <div class="reminder-input-row">
+                  <input id="reminderEmail" type="email" placeholder="Enter email address" value="" disabled />
+                  <select id="reminderTime" style="max-width: 180px; margin-bottom: 0;" disabled>
+                    <option value="Evening before at 7:00 PM">Evening before (7 PM)</option>
+                    <option value="Morning of collection at 6:30 AM">Morning of (6:30 AM)</option>
+                    <option value="24 hours before">24 hours before</option>
+                  </select>
+                </div>
+                <button id="sendReminderBtn" class="reminder-btn" disabled>Set Email Reminder</button>
+              </div>
             </div>
           </div>
 
@@ -3570,168 +3833,266 @@ export default function App() {
   };
 
   const isChatActive = messages.length > 0;
+  const activeSession = chatSessions.find((s) => s.id === currentSessionId);
+  const activeChatTitle = activeSession?.title || (messages.length > 0 ? messages[0].content.slice(0, 32) : 'LifeGuide Assist');
 
   return (
-    <div className="app-viewport">
-      {/* Collapsible History Sidebar */}
-      <aside className={`history-sidebar ${isSidebarOpen ? 'open' : ''}`} id="historySidebar">
-        <div className="sidebar-header">
-          <div className="sidebar-brand" onClick={handleNewChat} role="button" tabIndex={0}>
-            <img
-              src="/LifeguideAssist_Logo__4_-removebg-preview.png"
-              onError={(e) => {
-                (e.currentTarget as HTMLImageElement).src = '/logo.png';
-              }}
-              alt="LifeguideAssist"
-              className="sidebar-logo"
-            />
-            <span className="sidebar-title">LifeguideAssist</span>
-          </div>
-          <button
-            type="button"
-            className="sidebar-close-btn"
-            id="closeSidebarBtn"
-            onClick={() => setIsSidebarOpen(false)}
-            title="Close sidebar"
-            aria-label="Close sidebar"
-          >
-            <PanelLeftClose style={{ width: 18, height: 18 }} />
-          </button>
-        </div>
+    <div className={`app-viewport ${isPreviewOpen ? 'preview-active-state' : ''}`}>
+      {/* Dynamic Ambient Soul Background Aura (Enhanced Depth & Radiance) */}
+      <div className="soul-ambient-auras" aria-hidden="true">
+        <div className="soul-orb soul-orb-1" />
+        <div className="soul-orb soul-orb-2" />
+        <div className="soul-orb soul-orb-3" />
+      </div>
 
-        <div className="sidebar-action-wrap">
-          <button
-            type="button"
-            className="sidebar-new-chat-btn"
-            id="sidebarNewChatBtn"
-            onClick={handleNewChat}
-          >
-            <Plus style={{ width: 15, height: 15 }} />
-            <span>New Chat</span>
-          </button>
-        </div>
-
-        <div className="sidebar-history-section">
-          <div className="sidebar-section-label">
-            <History style={{ width: 13, height: 13 }} />
-            <span>Chat History</span>
-            {chatSessions.length > 0 && (
-              <span className="sidebar-count-badge">{chatSessions.length}</span>
-            )}
-          </div>
-
-          <div className="sidebar-sessions-list" id="sidebarSessionsList">
-            {chatSessions.length === 0 ? (
-              <div className="sidebar-empty-state">
-                <MessageSquare style={{ width: 22, height: 22, opacity: 0.35, marginBottom: 6 }} />
-                <span>No chat history yet</span>
-                <p>Your conversations will appear here automatically.</p>
+      {/* Collapsible History Sidebar (Open: Image 1, Collapsed Rail: Image 2) */}
+      <aside className={`history-sidebar ${isSidebarOpen ? 'open' : 'collapsed'}`} id="historySidebar">
+        {isSidebarOpen ? (
+          <div className="sidebar-open-container">
+            {/* Header with big transparent logo, title, subtitle & close button */}
+            <div className="sidebar-header">
+              <div className="sidebar-brand-box" onClick={handleNewChat} role="button" tabIndex={0}>
+                <div className="sidebar-brand-icon">
+                  <img
+                    src="/LifeguideAssist_Logo__4_-removebg-preview.png"
+                    onError={(e) => {
+                      (e.currentTarget as HTMLImageElement).src = '/logo.png';
+                    }}
+                    alt="LifeGuide Assist"
+                    className="sidebar-brand-img"
+                  />
+                </div>
+                <div className="sidebar-brand-text-col">
+                  <span className="sidebar-brand-title">LifeGuide Assist</span>
+                  <span className="sidebar-brand-sub">Resource Bot Workspace</span>
+                </div>
               </div>
-            ) : (
-              chatSessions.map((session) => {
-                const isActive = session.id === currentSessionId && messages.length > 0;
-                return (
-                  <div
-                    key={session.id}
-                    className={`sidebar-session-item ${isActive ? 'active' : ''}`}
-                    onClick={() => handleSelectSession(session)}
-                    title={session.title}
+              <button
+                type="button"
+                className="sidebar-close-btn"
+                id="closeSidebarBtn"
+                onClick={() => setIsSidebarOpen(false)}
+                title="Close sidebar"
+                aria-label="Close sidebar"
+              >
+                <X style={{ width: 18, height: 18 }} />
+              </button>
+            </div>
+
+            {/* New Conversation Button (Cream/Sand Pill) */}
+            <div className="sidebar-action-wrap">
+              <button
+                type="button"
+                className="sidebar-new-conv-btn"
+                id="sidebarNewConvBtn"
+                onClick={handleNewChat}
+              >
+                <MessageSquarePlus style={{ width: 17, height: 17 }} />
+                <span>New conversation</span>
+              </button>
+            </div>
+
+            {/* History Section Header & Search Box */}
+            <div className="sidebar-history-top">
+              <div className="sidebar-section-header">
+                <span className="sidebar-section-title-text">HISTORY</span>
+                <span className="sidebar-count-num">{chatSessions.length}</span>
+              </div>
+              <div className="sidebar-search-box">
+                <Search style={{ width: 14, height: 14, color: '#8c837a' }} />
+                <input
+                  type="text"
+                  className="sidebar-search-input"
+                  placeholder="Search history..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                />
+                {searchQuery && (
+                  <button
+                    type="button"
+                    className="sidebar-search-clear"
+                    onClick={() => setSearchQuery('')}
+                    title="Clear search"
                   >
-                    <MessageSquare style={{ width: 14, height: 14, flexShrink: 0, opacity: isActive ? 1 : 0.7 }} />
-                    <span className="sidebar-session-title">{session.title}</span>
-                    <button
-                      type="button"
-                      className="sidebar-session-delete"
-                      onClick={(e) => handleDeleteSession(e, session.id)}
-                      title="Delete chat"
+                    <X style={{ width: 12, height: 12 }} />
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Sessions List */}
+            <div className="sidebar-sessions-list" id="sidebarSessionsList">
+              {filteredSessions.length === 0 ? (
+                <div className="sidebar-empty-state">
+                  <MessageSquare style={{ width: 22, height: 22, opacity: 0.35, marginBottom: 6 }} />
+                  <span>{searchQuery ? 'No matching history found' : 'No history yet'}</span>
+                  <p>{searchQuery ? 'Try a different search term.' : 'Your conversations will appear here automatically.'}</p>
+                </div>
+              ) : (
+                filteredSessions.map((session) => {
+                  const isActive = session.id === currentSessionId && messages.length > 0;
+                  return (
+                    <div
+                      key={session.id}
+                      className={`sidebar-session-item ${isActive ? 'active' : ''}`}
+                      onClick={() => handleSelectSession(session)}
+                      title={session.title}
                     >
-                      <Trash2 style={{ width: 13, height: 13 }} />
-                    </button>
-                  </div>
-                );
-              })
-            )}
-          </div>
-        </div>
+                      <span className="sidebar-session-title">{session.title}</span>
+                      <button
+                        type="button"
+                        className="sidebar-session-more"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setSelectedSessionForModal(session);
+                          setIsSessionModalOpen(true);
+                        }}
+                        title="Chat options"
+                      >
+                        <MoreHorizontal style={{ width: 14, height: 14 }} />
+                      </button>
+                    </div>
+                  );
+                })
+              )}
+            </div>
 
-        {chatSessions.length > 0 && (
-          <div className="sidebar-footer">
+            {/* Sidebar Bottom Actions */}
+            <div className="sidebar-footer">
+              <button
+                type="button"
+                className="sidebar-footer-btn"
+                id="sidebarSettingsBtn"
+                onClick={() => {
+                  setTempSettings(userSettings);
+                  setIsSettingsOpen(true);
+                }}
+              >
+                <Settings style={{ width: 14, height: 14 }} />
+                <span>Settings</span>
+              </button>
+              {chatSessions.length > 0 && (
+                <button
+                  type="button"
+                  className="sidebar-footer-btn clear"
+                  id="clearHistoryBtn"
+                  onClick={handleClearAllHistory}
+                >
+                  <Trash2 style={{ width: 14, height: 14 }} />
+                  <span>Clear History</span>
+                </button>
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="sidebar-collapsed-rail">
             <button
               type="button"
-              className="sidebar-clear-all-btn"
-              id="clearHistoryBtn"
-              onClick={handleClearAllHistory}
-            >
-              <Trash2 style={{ width: 13, height: 13 }} />
-              <span>Clear all history</span>
-            </button>
-          </div>
-        )}
-      </aside>
-
-      {/* Sidebar Mobile/Overlay Backdrop */}
-      {isSidebarOpen && (
-        <div
-          className="sidebar-overlay"
-          id="sidebarOverlay"
-          onClick={() => setIsSidebarOpen(false)}
-        />
-      )}
-
-      {/* Main Workspace */}
-      <div className={`workspace-main ${isChatActive ? 'active-chat' : ''}`} id="workspaceMain">
-        {/* Top Application Bar with Logo & Sidebar Toggle */}
-        <header className="app-top-bar" id="appTopBar">
-          <div className="top-bar-left">
-            <button
-              type="button"
-              className="top-bar-btn"
-              id="toggleSidebarBtn"
-              onClick={() => setIsSidebarOpen((prev) => !prev)}
-              title={isSidebarOpen ? 'Close History' : 'Open History'}
-              aria-label="Toggle History"
-            >
-              <PanelLeft style={{ width: 17, height: 17 }} />
-            </button>
-
-            <div
-              className="top-brand-badge"
-              id="topBrandBadge"
-              onClick={handleNewChat}
-              title="LifeguideAssist - Start New Chat"
-              role="button"
-              tabIndex={0}
+              className="sidebar-rail-logo-btn"
+              onClick={() => setIsSidebarOpen(true)}
+              title="Open LGPAI Menu"
+              aria-label="Open LGPAI Menu"
             >
               <img
                 src="/LifeguideAssist_Logo__4_-removebg-preview.png"
                 onError={(e) => {
                   (e.currentTarget as HTMLImageElement).src = '/logo.png';
                 }}
-                alt="LifeguideAssist Logo"
-                className="top-logo-img"
+                alt="LGPAI"
+                className="sidebar-rail-logo-img"
               />
-              <span className="top-brand-text">LifeguideAssist</span>
+              <div className="sidebar-logo-menu-overlay" title="Open Menu">
+                <PanelLeft style={{ width: 19, height: 19 }} />
+              </div>
+            </button>
+
+            {/* New Conversation Button when sidebar is closed - white/light background with 15px radius */}
+            <button
+              type="button"
+              className="sidebar-rail-new-btn"
+              id="sidebarRailNewBtn"
+              onClick={handleNewChat}
+              title="New conversation"
+              aria-label="New conversation"
+            >
+              <Plus style={{ width: 18, height: 18 }} />
+            </button>
+
+            <div className="sidebar-rail-spacer" />
+
+            <button
+              type="button"
+              className="sidebar-rail-btn"
+              onClick={() => {
+                setTempSettings(userSettings);
+                setIsSettingsOpen(true);
+              }}
+              title="Application Settings"
+            >
+              <Settings style={{ width: 17, height: 17 }} />
+            </button>
+          </div>
+        )}
+      </aside>
+
+      {/* Sidebar Overlay on mobile / backdrop (No blur) */}
+      {isSidebarOpen && (
+        <div
+          className="sidebar-overlay"
+          id="sidebarOverlay"
+          onClick={() => handleToggleSidebar(false)}
+        />
+      )}
+
+      {/* Main Workspace */}
+      <div className={`workspace-main ${isChatActive ? 'active-chat' : ''}`} id="workspaceMain">
+        {/* Top Application Bar - Chat title on left, Join Discord on right */}
+        <header className={`app-top-bar ${isPreviewOpen ? 'preview-active' : ''}`} id="appTopBar">
+          <div className="top-bar-left">
+            {/* Phone-only menu button (Hidden on computer/desktop) */}
+            <button
+              type="button"
+              className="top-bar-btn mobile-only-menu-btn"
+              id="mobileToggleSidebarBtn"
+              onClick={() => handleToggleSidebar()}
+              title={isSidebarOpen ? 'Close Menu' : 'Open Menu'}
+              aria-label="Toggle Menu"
+            >
+              <PanelLeft style={{ width: 17, height: 17 }} />
+            </button>
+
+            {/* Chat / Session Title on Left */}
+            <div className="top-bar-title-container" id="topBarTitleContainer">
+              <span className="top-bar-chat-title" id="topBarChatTitle" title={activeChatTitle}>
+                {activeChatTitle}
+              </span>
             </div>
           </div>
 
           <div className="top-bar-right">
-            <button
-              type="button"
-              className="top-new-chat-btn"
-              id="topNewChatBtn"
-              onClick={handleNewChat}
-              title="Create New Chat"
+            {/* Join Discord Server Button on Right */}
+            <a
+              href="https://discord.gg/zVma3cFVf"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="top-join-discord-btn"
+              id="topJoinDiscordBtn"
+              title="Join Discord Server"
             >
-              <Plus style={{ width: 14, height: 14 }} />
-              <span>New Chat</span>
-            </button>
+              <svg className="discord-icon" width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515a.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0a12.64 12.64 0 0 0-.617-1.25a.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057a19.9 19.9 0 0 0 5.993 3.03a.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994.021-.041.001-.09-.041-.106a13.107 13.107 0 0 1-1.872-.892a.077.077 0 0 1-.008-.128a10.2 10.2 0 0 0 .372-.292a.074.074 0 0 1 .077-.01c3.929 1.793 8.18 1.793 12.061 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127a12.299 12.299 0 0 1-1.873.894a.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028a19.839 19.839 0 0 0 6.002-3.03a.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.028zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/>
+              </svg>
+              <span>Join Discord</span>
+            </a>
           </div>
         </header>
 
-        {/* Initial Welcome State (without central logo, logo is at top) */}
+        {/* Initial Welcome State (Centered with dynamic user name) */}
         {!isChatActive && (
-          <>
-            <h1 id="mainTitle">What are we looking into?</h1>
+          <div className="welcome-frontpage-container centered-welcome" id="welcomeFrontpageContainer">
+            <h1 id="mainTitle" className="centered-main-title">
+              Hi {userSettings.userName ? userSettings.userName : 'Bryan'}, what should we dive into today?
+            </h1>
 
             {/* 4 Feature Cards Grid under the title - Compact & Smaller than input bar */}
             <div className="welcome-actions-grid" id="welcomeActionsGrid">
@@ -3795,7 +4156,7 @@ export default function App() {
                 </div>
               </button>
             </div>
-          </>
+          </div>
         )}
 
         {/* Full-width Chat Scroll Area with scroller spanning from top to bottom on the right edge */}
@@ -3866,7 +4227,7 @@ export default function App() {
                       </div>
 
                       <div className="msg-body">
-                        {/* Thoughts script accordion displayed above response */}
+                        {/* Thoughts & Analysis container displayed above response */}
                         {msg.thoughts && msg.thoughts.length > 0 && (
                           <div className="thoughts-container">
                             <button
@@ -3874,14 +4235,14 @@ export default function App() {
                               onClick={() => toggleThoughts(msg.id)}
                               title="Toggle AI reasoning thoughts"
                             >
-                              <span className="thoughts-title">Thoughts ({msg.thoughts.length} steps)</span>
-                              <span className="thoughts-chevron">{openThoughtIds[msg.id] ? '▲' : '▼'}</span>
+                              <span className="thoughts-title">Thoughts & Analysis ({msg.thoughts.length} steps)</span>
+                              <span className="thoughts-chevron">{openThoughtIds[msg.id] ? '▲ Collapse' : '▼ View'}</span>
                             </button>
                             {openThoughtIds[msg.id] && (
                               <div className="thoughts-body">
                                 {msg.thoughts.map((step, sIdx) => (
                                   <div key={sIdx} className="thought-step">
-                                    <span className="thought-step-num">{sIdx + 1}.</span>
+                                    <span className="thought-tick-mark">✓</span>
                                     <span className="thought-step-text">{step}</span>
                                   </div>
                                 ))}
@@ -3943,38 +4304,45 @@ export default function App() {
                         {/* Message text with Markdown and typing effect */}
                         <FormattedMessage text={msg.content} isTyping={typingMsgId === msg.id} />
 
-                        {/* Clickable Resource Card with Website Logo */}
-                        {msg.resource && (
+                        {/* Clickable Resource Cards with Website Logos (Supports Multiple Resources) */}
+                        {((msg.resources && msg.resources.length > 0) || msg.resource) && (
                           <div className="resources-section">
-                            <div className="resources-title">RESOURCES</div>
-                            <a
-                              href={msg.resource.url}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="resource-card"
-                              id={`res-card-${msg.id}`}
-                              title={`Open ${msg.resource.title || msg.resource.domain}`}
-                            >
-                              <div className="resource-icon-box">
-                                <img
-                                  src={`https://www.google.com/s2/favicons?domain=${encodeURIComponent(msg.resource.domain || 'google.com')}&sz=64`}
-                                  alt={msg.resource.domain}
-                                  className="resource-site-logo"
-                                  onError={(e) => {
-                                    (e.currentTarget as HTMLElement).style.display = 'none';
-                                    const fallback = (e.currentTarget as HTMLElement).nextElementSibling as HTMLElement;
-                                    if (fallback) fallback.style.display = 'flex';
-                                  }}
-                                />
-                                <div className="resource-fallback-icon" style={{ display: 'none' }}>
-                                  🌐
-                                </div>
-                              </div>
-                              <div className="resource-info">
-                                <span className="resource-name">{msg.resource.title}</span>
-                                <span className="resource-domain">{msg.resource.domain}</span>
-                              </div>
-                            </a>
+                            <div className="resources-title">
+                              {msg.resources && msg.resources.length > 1 ? 'RESOURCES' : 'RESOURCE'}
+                            </div>
+                            <div className="resources-cards-container">
+                              {(msg.resources && msg.resources.length > 0 ? msg.resources : [msg.resource!]).map((resItem, resIdx) => (
+                                <a
+                                  key={resIdx}
+                                  href={resItem.url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="resource-card"
+                                  id={`res-card-${msg.id}-${resIdx}`}
+                                  title={`Open ${resItem.title || resItem.domain}`}
+                                >
+                                  <div className="resource-icon-box">
+                                    <img
+                                      src={`https://www.google.com/s2/favicons?domain=${encodeURIComponent(resItem.domain || 'google.com')}&sz=64`}
+                                      alt={resItem.domain}
+                                      className="resource-site-logo"
+                                      onError={(e) => {
+                                        (e.currentTarget as HTMLElement).style.display = 'none';
+                                        const fallback = (e.currentTarget as HTMLElement).nextElementSibling as HTMLElement;
+                                        if (fallback) fallback.style.display = 'flex';
+                                      }}
+                                    />
+                                    <div className="resource-fallback-icon" style={{ display: 'none' }}>
+                                      🌐
+                                    </div>
+                                  </div>
+                                  <div className="resource-info">
+                                    <span className="resource-name">{resItem.title}</span>
+                                    <span className="resource-domain">{resItem.domain}</span>
+                                  </div>
+                                </a>
+                              ))}
+                            </div>
                           </div>
                         )}
 
@@ -4027,14 +4395,14 @@ export default function App() {
                   );
                 })}
 
-                {/* Thinking indicator with AI Logo and clickable live script (No dot on the left) */}
+                {/* Thinking indicator with AI Logo and live ticking container */}
                 {isGenerating && (
                   <div className="msg-row assistant-row thinking-row" id="thinkingIndicator">
                     <div className="ai-avatar-badge" title="LifeguideAssist">
                       <img
-                        src="/logo.png"
+                        src="/LifeguideAssist_Logo__4_-removebg-preview.png"
                         onError={(e) => {
-                          (e.currentTarget as HTMLImageElement).src = '/LifeguideAssist_Logo__4_-removebg-preview.png';
+                          (e.currentTarget as HTMLImageElement).src = '/logo.png';
                         }}
                         alt="LifeguideAssist"
                         className="ai-avatar-svg"
@@ -4042,23 +4410,30 @@ export default function App() {
                       />
                     </div>
                     <div className="msg-body">
-                      <div
-                        className="thinking-box"
-                        onClick={() => setIsLiveThoughtsOpen((prev) => !prev)}
-                        title="Click to view AI reasoning script"
-                      >
-                        <span className="thinking-text">Thinking...</span>
-                        <span className="thinking-toggle-label">
-                          {isLiveThoughtsOpen ? '(hide analysis ▲)' : '(click to view analysis ▼)'}
-                        </span>
-                      </div>
-                      {isLiveThoughtsOpen && (
-                        <div className="live-thinking-script">
-                          <div className="live-thought-step">✦ Analyzing query parameters and context...</div>
-                          <div className="live-thought-step">✦ Evaluating visual tools and external grounding...</div>
-                          <div className="live-thought-step">✦ Synthesizing response with clear headings & bold formatting...</div>
+                      <div className="active-thinking-container">
+                        <div className="active-thinking-header">
+                          <span className="thinking-pulse-dot" />
+                          <span className="active-thinking-title">Thinking...</span>
                         </div>
-                      )}
+                        <div className="active-thinking-steps">
+                          <div className={`active-thought-step ${liveThoughtStep >= 0 ? 'active' : ''} ${liveThoughtStep > 0 ? 'ticked' : ''}`}>
+                            <span className="step-tick">{liveThoughtStep > 0 ? '✓' : '⟳'}</span>
+                            <span className="step-text">Step 1: Analyzing user prompt intent & context</span>
+                          </div>
+                          <div className={`active-thought-step ${liveThoughtStep >= 1 ? 'active' : ''} ${liveThoughtStep > 1 ? 'ticked' : ''}`}>
+                            <span className="step-tick">{liveThoughtStep > 1 ? '✓' : liveThoughtStep === 1 ? '⟳' : '○'}</span>
+                            <span className="step-text">Step 2: Performing Bing research & verifying tool actions</span>
+                          </div>
+                          <div className={`active-thought-step ${liveThoughtStep >= 2 ? 'active' : ''} ${liveThoughtStep > 2 ? 'ticked' : ''}`}>
+                            <span className="step-tick">{liveThoughtStep > 2 ? '✓' : liveThoughtStep === 2 ? '⟳' : '○'}</span>
+                            <span className="step-text">Step 3: Synthesizing structured response & visual layouts</span>
+                          </div>
+                          <div className={`active-thought-step ${liveThoughtStep >= 3 ? 'active' : ''}`}>
+                            <span className="step-tick">{liveThoughtStep >= 3 ? '✓' : '○'}</span>
+                            <span className="step-text">Step 4: Grounding interactive visual preview</span>
+                          </div>
+                        </div>
+                      </div>
                     </div>
                   </div>
                 )}
@@ -4471,8 +4846,267 @@ export default function App() {
               </div>
             </div>
           </div>
+
+          {/* Quick Prompt Chips on Welcome View - Displayed ONLY on computer / desktop */}
+          {!isChatActive && (
+            <div className="welcome-prompt-chips" id="welcomePromptChips">
+              {[
+                'Find the best deal',
+                'Predict the future',
+                'Create an image',
+                'Take a quiz',
+                'Improve writing',
+                'Fix a clunky sentence',
+                'Design a logo',
+                'Write a speech',
+              ].map((chipText) => (
+                <button
+                  key={chipText}
+                  type="button"
+                  className="welcome-chip-btn"
+                  onClick={() => {
+                    setInputText(chipText);
+                    if (textareaRef.current) {
+                      textareaRef.current.focus();
+                    }
+                  }}
+                >
+                  <span>{chipText}</span>
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       </div>
+
+      {/* Dedicated Settings Page (Full-screen grouped containers view) */}
+      {isSettingsOpen && (
+        <SettingsPage
+          settings={userSettings}
+          chatSessions={chatSessions}
+          onSave={handleSaveSettings}
+          onClose={() => setIsSettingsOpen(false)}
+          onClearHistory={() => {
+            setChatSessions([]);
+            try {
+              localStorage.removeItem('lifeguide_chat_sessions_v1');
+            } catch (e) {}
+            handleNewChat();
+          }}
+        />
+      )}
+
+      {/* Chat History Options Modal - Overlaps whole page with background blur */}
+      {isSessionModalOpen && selectedSessionForModal && (
+        <div
+          className="chat-options-modal-backdrop"
+          id="chatOptionsModalBackdrop"
+          onClick={() => {
+            setIsSessionModalOpen(false);
+            setSelectedSessionForModal(null);
+          }}
+        >
+          <div
+            className="chat-options-modal-card"
+            id="chatOptionsModalCard"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="chat-options-modal-header">
+              <div className="chat-options-title-block">
+                <div className="chat-options-icon-box">
+                  <MessageSquare style={{ width: 18, height: 18, color: '#dfd5c8' }} />
+                </div>
+                <div>
+                  <h3 className="chat-options-modal-heading">Chat Options</h3>
+                  <p className="chat-options-modal-sub" title={selectedSessionForModal.title}>
+                    {selectedSessionForModal.title}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                className="chat-options-close-btn"
+                onClick={() => {
+                  setIsSessionModalOpen(false);
+                  setSelectedSessionForModal(null);
+                }}
+                title="Close"
+              >
+                <X style={{ width: 16, height: 16 }} />
+              </button>
+            </div>
+
+            <div className="chat-options-modal-body">
+              {/* Option 1: Download Chat */}
+              <button
+                type="button"
+                className="chat-option-row-btn"
+                id="modalDownloadChatBtn"
+                onClick={() => handleDownloadChatSession(selectedSessionForModal)}
+              >
+                <div className="chat-option-btn-icon download">
+                  <Download style={{ width: 18, height: 18 }} />
+                </div>
+                <div className="chat-option-btn-content">
+                  <span className="chat-option-btn-title">Download Chat</span>
+                  <span className="chat-option-btn-desc">
+                    Export complete conversation transcript with formatting and tool outputs as Markdown
+                  </span>
+                </div>
+              </button>
+
+              {/* Option 2: Reset Chat */}
+              <button
+                type="button"
+                className="chat-option-row-btn"
+                id="modalResetChatBtn"
+                onClick={() => handleResetChatSession(selectedSessionForModal)}
+              >
+                <div className="chat-option-btn-icon reset">
+                  <RotateCcw style={{ width: 18, height: 18 }} />
+                </div>
+                <div className="chat-option-btn-content">
+                  <span className="chat-option-btn-title">Reset Chat</span>
+                  <span className="chat-option-btn-desc">
+                    Clear all messages from this conversation and start fresh
+                  </span>
+                </div>
+              </button>
+
+              {/* Option 3: Delete Chat */}
+              <button
+                type="button"
+                className="chat-option-row-btn delete"
+                id="modalDeleteChatBtn"
+                onClick={() => handleDeleteSessionFromModal(selectedSessionForModal.id)}
+              >
+                <div className="chat-option-btn-icon delete">
+                  <Trash2 style={{ width: 18, height: 18 }} />
+                </div>
+                <div className="chat-option-btn-content">
+                  <span className="chat-option-btn-title">Delete Chat</span>
+                  <span className="chat-option-btn-desc">
+                    Permanently delete this chat history from your session list
+                  </span>
+                </div>
+              </button>
+            </div>
+
+            <div className="chat-options-modal-footer">
+              <button
+                type="button"
+                className="chat-options-cancel-btn"
+                onClick={() => {
+                  setIsSessionModalOpen(false);
+                  setSelectedSessionForModal(null);
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* First-Time User Onboarding Modal */}
+      {isOnboardingOpen && (
+        <div
+          className="chat-options-modal-backdrop"
+          id="onboardingModalBackdrop"
+          style={{ zIndex: 10000 }}
+        >
+          <div
+            className="chat-options-modal-card onboarding-card"
+            id="onboardingModalCard"
+            style={{ maxWidth: 440, padding: 24 }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+              <div
+                style={{
+                  width: 44,
+                  height: 44,
+                  borderRadius: 12,
+                  background: '#241c16',
+                  border: '1px solid #4a3828',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <img
+                  src="/LifeguideAssist_Logo__4_-removebg-preview.png"
+                  onError={(e) => {
+                    (e.currentTarget as HTMLImageElement).src = '/logo.png';
+                  }}
+                  alt="LifeGuide Assist"
+                  style={{ width: 28, height: 28, objectFit: 'contain' }}
+                />
+              </div>
+              <div>
+                <h3 style={{ fontSize: '1.08rem', fontWeight: 700, color: '#ffffff', margin: 0 }}>
+                  Welcome to LifeGuide Assist
+                </h3>
+                <p style={{ fontSize: '0.8rem', color: '#a89d91', margin: 0 }}>
+                  Personalized AI Workspace & Smart Assistant
+                </p>
+              </div>
+            </div>
+
+            <form onSubmit={handleOnboardingSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              <div>
+                <label
+                  htmlFor="onboardingNameInput"
+                  style={{ display: 'block', fontSize: '0.84rem', fontWeight: 600, color: '#e8e0d5', marginBottom: 6 }}
+                >
+                  What should the AI call you?
+                </label>
+                <input
+                  id="onboardingNameInput"
+                  type="text"
+                  value={onboardingNameInput}
+                  onChange={(e) => setOnboardingNameInput(e.target.value)}
+                  placeholder="e.g. Bryan, Sarah, Alex..."
+                  autoFocus
+                  required
+                  style={{
+                    width: '100%',
+                    background: '#15110e',
+                    border: '1px solid #3d3126',
+                    borderRadius: 8,
+                    padding: '10px 14px',
+                    color: '#ffffff',
+                    fontSize: '0.9rem',
+                    outline: 'none',
+                  }}
+                  onFocus={(e) => (e.target.style.borderColor = '#d4af37')}
+                  onBlur={(e) => (e.target.style.borderColor = '#3d3126')}
+                />
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 4 }}>
+                <button
+                  type="submit"
+                  className="settings-btn-save"
+                  id="onboardingSubmitBtn"
+                  style={{
+                    padding: '9px 20px',
+                    fontSize: '0.85rem',
+                    fontWeight: 600,
+                    borderRadius: 8,
+                    background: '#dfd5c8',
+                    color: '#1a1410',
+                    border: 'none',
+                    cursor: 'pointer',
+                  }}
+                >
+                  Save & Get Started
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* Side Preview Panel - FLUSH / NOT FLOATING / RESIZABLE */}
       <div

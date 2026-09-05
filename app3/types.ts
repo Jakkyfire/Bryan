@@ -69,3 +69,9 @@ export interface ChatSession {
   previewContent?: PreviewContent | null;
 }
 
+export interface UserSettings {
+  model: string;
+  userName: string;
+  userEmail: string;
+  defaultLocation: string;
+}

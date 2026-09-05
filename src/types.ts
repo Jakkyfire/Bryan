@@ -29,6 +29,7 @@ export interface Message {
   toolCall?: ToolCallData;
   toolResult?: any;
   resource?: ResourceData;
+  resources?: ResourceData[];
   rawCommand?: string;
   thoughts?: string[];
   rating?: 'up' | 'down' | null;
@@ -67,4 +68,21 @@ export interface ChatSession {
   updatedAt: number;
   messages: Message[];
   previewContent?: PreviewContent | null;
+}
+
+export interface UserSettings {
+  model: string;
+  userName: string;
+  userEmail: string;
+  defaultLocation: string;
+  postcode?: string;
+  darkness?: 'pitch' | 'oled' | 'espresso' | 'slate' | 'titanium';
+  accentColor?: 'gold' | 'sky' | 'emerald' | 'rose' | 'violet';
+  fontSize?: 'compact' | 'standard' | 'comfortable' | 'large';
+  temperature?: number;
+  aiTone?: 'concise' | 'friendly' | 'technical' | 'creative';
+  timeFormat?: '24h' | '12h';
+  tempUnits?: 'c' | 'f';
+  enableToolGrounding?: boolean;
+  enableSuggestions?: boolean;
 }

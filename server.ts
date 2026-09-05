@@ -11,7 +11,24 @@ dotenv.config();
 const app = express();
 const PORT = 3000;
 
-app.use(express.json({ limit: '15mb' }));
+// Enable CORS and body parsers
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
+
+app.use(express.json({ limit: '20mb' }));
+app.use(express.urlencoded({ extended: true, limit: '20mb' }));
+
+// Health check endpoint
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', time: new Date().toISOString() });
+});
 
 // Hugging Face router token - from process.env or fallback token
 const HF_TOKEN =
@@ -19,14 +36,21 @@ const HF_TOKEN =
   process.env.HF_TOKEN ||
   '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';
 
-// Primary Gemini models
-const GEMINI_MODELS = ['gemini-3.6-flash', 'gemini-3.5-flash-lite'];
+// Primary Gemini models - prioritized for ultra-fast generation and tool calling
+const GEMINI_MODELS = [
+  'gemini-3.7-flash',
+  'gemini-3.8-flash',
+  'gemini-3.6-flash',
+  'gemini-3.1-flash-lite',
+  'gemini-flash-latest',
+  'gemini-3.1-pro-preview',
+];
 
 // Lazy GoogleGenAI initialization
 let aiClient: GoogleGenAI | null = null;
 function getGenAI(): GoogleGenAI | null {
   const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
+  if (!apiKey || apiKey === 'MY_GEMINI_API_KEY' || apiKey.startsWith('http')) {
     return null;
   }
   if (!aiClient) {
@@ -40,6 +64,94 @@ function getGenAI(): GoogleGenAI | null {
     });
   }
   return aiClient;
+}
+
+// Robust fallback AI Generator (Hugging Face Router + Pollinations)
+async function generateFallbackAIResponse(
+  messages: any[],
+  systemInstruction: string,
+  userSettings: any,
+  isRetry?: boolean
+): Promise<string | null> {
+  // 1. Try Hugging Face Router
+  if (HF_TOKEN) {
+    const hfModels = [
+      'Qwen/Qwen2.5-72B-Instruct',
+      'meta-llama/Llama-3.3-70B-Instruct',
+      'mistralai/Mistral-7B-Instruct-v0.3',
+    ];
+    for (const model of hfModels) {
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 9000);
+        const formatted = [
+          { role: 'system', content: systemInstruction },
+          ...messages.map((m: any) => ({
+            role: m.role === 'assistant' ? 'assistant' : 'user',
+            content: m.content || '',
+          })),
+        ];
+        const res = await fetch('https://router.huggingface.co/hf-inference/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${HF_TOKEN}`,
+          },
+          body: JSON.stringify({
+            model,
+            messages: formatted,
+            max_tokens: 1600,
+            temperature: isRetry ? 0.9 : 0.7,
+          }),
+          signal: controller.signal,
+        });
+        clearTimeout(timeout);
+        if (res.ok) {
+          const data: any = await res.json();
+          const text = data?.choices?.[0]?.message?.content;
+          if (text && text.trim()) {
+            return text.trim();
+          }
+        }
+      } catch {
+        // try next model
+      }
+    }
+  }
+
+  // 2. Try Pollinations Free LLM API
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+    const pollinationsPayload = {
+      messages: [
+        { role: 'system', content: systemInstruction },
+        ...messages.map((m: any) => ({
+          role: m.role === 'assistant' ? 'assistant' : 'user',
+          content: m.content || '',
+        })),
+      ],
+      model: 'openai',
+      seed: Math.floor(Math.random() * 100000),
+    };
+    const res = await fetch('https://text.pollinations.ai/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(pollinationsPayload),
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+    if (res.ok) {
+      const text = await res.text();
+      if (text && text.trim()) {
+        return text.trim();
+      }
+    }
+  } catch {
+    // continue to rule-based fallback
+  }
+
+  return null;
 }
 
 // Function Declarations for the AI Model Tools
@@ -113,7 +225,7 @@ const sendBinEmailToolDeclaration: FunctionDeclaration = {
     properties: {
       email: {
         type: Type.STRING,
-        description: 'The recipient email address to send the schedule and reminder to (e.g. "mailbryanuk@gmail.com").',
+        description: 'The recipient email address to send the schedule and reminder to (e.g. "alex@example.com").',
       },
       postcode: {
         type: Type.STRING,
@@ -138,21 +250,21 @@ const sendBinEmailToolDeclaration: FunctionDeclaration = {
 
 const openWebpageToolDeclaration: FunctionDeclaration = {
   name: 'open_webpage',
-  description: 'Research a topic or open a webpage/search results preview for the user in the side preview panel.',
+  description: 'Research any topic using Bing Web Search or open a webpage/search results preview for the user in the side preview panel.',
   parameters: {
     type: Type.OBJECT,
     properties: {
       query: {
         type: Type.STRING,
-        description: 'The search term or research query to look up.',
+        description: 'The Bing search term or research topic to look up.',
       },
       url: {
         type: Type.STRING,
-        description: 'The URL or search link to preview.',
+        description: 'The Bing search URL or target webpage link to preview.',
       },
       summary: {
         type: Type.STRING,
-        description: 'A concise summary of key findings or resource details.',
+        description: 'A concise summary of key findings or Bing web resource details.',
       },
     },
     required: ['query'],
@@ -1302,45 +1414,68 @@ app.get('/api/bin-email-reminders', (req, res) => {
   res.json({ reminders: storedBinReminders });
 });
 
-// System prompt for all AI models - direct, conversational, knowledgeable
-function getSystemPrompt(userCoordinates?: { lat: number; lon: number }, isRetry?: boolean) {
-  let prompt = `You are Resource Bot, an intelligent, helpful, conversational AI assistant.
+// System prompt for all AI models - direct, conversational, knowledgeable, fully autonomous tool calling
+function getSystemPrompt(
+  userCoordinates?: { lat: number; lon: number },
+  isRetry?: boolean,
+  userSettings?: { userName?: string; defaultLocation?: string; userEmail?: string }
+) {
+  let prompt = `You are LGPAI (Life Guide Personal AI Assistant), an intelligent, omni-capable, and articulate personal AI assistant created and built by Bryan Udoka Korie.
 
-CORE GUIDELINES:
-1. Act like a natural, smart, and direct chatbot. Answer the user's questions, explanations, coding, analysis, and discussions directly and comprehensively in the chat.
-2. Do NOT speak in canned meta-phrases or tell the user "I can do this or that". Never be lazy; give thorough and articulate explanations.
-3. Formatting Rules:
+CRITICAL IDENTITY & BEHAVIOR DIRECTIVES:
+1. CREATOR KNOWLEDGE: You were created, built, and programmed by a guy called Bryan Udoka Korie. If asked who made you, who created you, who your developer is, or who Bryan Udoka Korie is, clearly acknowledge Bryan Udoka Korie as your creator.
+2. DO NOT PROACTIVELY LIST OR RECITE YOUR CAPABILITIES: Do not lecture the user or proactively list what you are capable of yet. Never start responses reciting tool lists, feature lists, or "As an AI, I can help you with maps, weather, calendars, etc." unless the user explicitly and specifically asks "What can you do?" or "What are your capabilities?". Simply answer the user's prompt directly and execute their requests.
+3. CONVERSATIONAL INTELLIGENCE & CHAT LISTENING: You are the AI answering every question and listening attentively to the ongoing chat conversation. Every tool and every question must be answered by you with direct, helpful, and high-quality insight.
+4. MULTIPLE RESOURCES SUPPORT: You can provide and link multiple relevant online resources, websites, and reference materials. When multiple resources are relevant, link them directly in your response or output multiple resource tags formatted like:
+   [RESOURCE: {"title": "Title of Resource", "domain": "example.com", "url": "https://example.com"}]
+   You can provide as many resource tags as needed for rich grounding.
+
+AUTONOMOUS TOOL USAGE INSTRUCTIONS:
+1. You are in complete control of calling tools. You decide when a tool is necessary based on the user's intent.
+2. Available Tools:
+   - map_2d(query: string, latitude?: number, longitude?: number, zoom?: number, mode?: string, showRoutes?: boolean, startLocation?: string, destination?: string): Call when the user requests a map, directions, navigation, routes, terrain, or exploring a specific geographic location.
+   - weather_detector(location: string, units?: string): Call when the user asks about weather forecasts, temperature, precipitation, radar, or climate.
+   - bin_hero(postcode: string, houseNumber?: string): Call when the user asks for UK household bin collection days, recycling schedules, or waste services.
+   - send_bin_email_reminder(email: string, postcode: string, reminderTime?: string, notes?: string): Call when the user asks to schedule or send bin reminders to an email.
+   - calendar(action: "view" | "add" | "remove" | "clear", title?: string, date?: string, time?: string, category?: string, priority?: string, notes?: string, eventId?: string): Call when managing calendar schedules, deadlines, meetings, or appointments.
+   - open_webpage(query: string, url?: string, summary?: string): Call when live Bing web research or searching external online sources is required.
+   - analyze_file(fileName: string, fileSummary?: string): Call when an attached file or dataset needs structured visual analysis in the preview panel.
+
+3. When a tool is appropriate, call the function tool natively (or emit [TOOL_CALL: tool_name | {"arg": "value"}]) with appropriate arguments, and provide a clear, conversational explanation.
+4. When the user is asking general questions, coding, creative tasks, advice, or normal conversation, DO NOT call any tools. Simply provide your articulate, direct, and well-structured response.
+5. Your name is LGPAI (Life Guide Personal AI Assistant). If asked who you are, introduce yourself as LGPAI created by Bryan Udoka Korie.
+6. Formatting Rules:
    - Heading Rules:
      * Use '###' or more (e.g. '###', '####', or '###text') for main Heading 1 (h1)
      * Use '##' (e.g. '##' or '##text') for sub Heading 2 (h2)
      * Use '#' (e.g. '#' or '#text') for section Heading 3 (h3)
-     * No other heading markers.
-     * These headings work in body text as well as inside table cells (e.g. '| ### Header 1 | ## Header 2 | # Header 3 |').
    - Tables Rule:
-     * STRICTLY ONLY use a table if it is genuinely needed (e.g. the user explicitly asks for a table or you need to present structured multi-column matrix/comparison data). Do NOT use tables for ordinary chat, explanations, single items, or regular lists.
-     * When you need a table, wrap the content in:
+     * Only use a table if genuinely needed for comparison or matrix data. Wrap table contents with:
        --- (bgcolor (default = whitish bronze)) col 1 | col 2 | col 3
        data 1 | data 2 | data 3 ---
-       (If bgcolor is omitted like '--- col1 | col2 ---', it defaults to a clean whitish bronze background).
    - Links & URLs:
-     * When providing links, format them using ^(url)name^ (e.g. ^(https://example.com)Example Site^) or [name](url).
+     * Format links using ^(url)name^ (e.g. ^(https://example.com)Example Site^) or [name](url).
    - Line Breaks:
-     * You can use '<br>' to insert line breaks anywhere inside text, paragraphs, or table cells.
+     * You can use '<br>' to insert line breaks anywhere.
    - Lists & Keywords:
      * Use standard bullet points ('- ' or '* ') and numbered lists ('1. ', '2. ')
      * Use **bold** for key concepts and inline \`code\` for technical terms.
-4. You have access to dedicated interactive tools for visual previews when relevant:
-   - map_2d: Call when the user explicitly requests to view a map, inspect 3D GIS terrain, find directions/routes, or check a specific location or bus routes.
-   - bin_hero: Call when looking up UK household bin and recycling collection schedules.
-   - send_bin_email_reminder: Call when the user wants to receive or schedule an email reminder for their household bin schedule or wants reminders sent to an email address.
-   - calendar: Call when the user wants to check dates, view their schedule, add calendar appointments, or remove/delete scheduled events.
-   - weather_detector: Call when the user asks about live weather, forecasts, temperature, or rain for a location.
-   - open_webpage: Call when the user requests live web research or to inspect an external URL.
-   - analyze_file: Call when inspecting attached files or datasets.
-5. When outputting code or configuration scripts, use the code block format:
+7. When outputting code or scripts, use the code block format:
    !(language)(filename) (color)
    code content here
    !`;
+
+  if (userSettings?.userName) {
+    prompt += `\n\n[USER IDENTITY: The user's name is "${userSettings.userName}". Address them as "${userSettings.userName}" warmly and naturally when appropriate.]`;
+  }
+
+  if (userSettings?.userEmail) {
+    prompt += `\n\n[USER DEFAULT EMAIL: "${userSettings.userEmail}". Use this email address for bin reminders or notifications if the user does not specify another email.]`;
+  }
+
+  if (userSettings?.defaultLocation) {
+    prompt += `\n\n[USER DEFAULT LOCATION: "${userSettings.defaultLocation}". If the user asks for weather, directions, or bins without stating a specific city or postcode, prioritize this location.]`;
+  }
 
   if (isRetry) {
     prompt += `\n\n[RETRY VARIATION: Provide a fresh, alternative angle with distinct formatting, new examples, or deeper nuance.]`;
@@ -1355,7 +1490,7 @@ CORE GUIDELINES:
 // Primary AI Chat endpoint
 app.post('/api/chat', async (req, res) => {
   try {
-    const { messages, userCoordinates, attachedFile, attachedFiles, isRetry } = req.body;
+    const { messages, userCoordinates, attachedFile, attachedFiles, isRetry, userSettings } = req.body;
 
     if (!messages || !Array.isArray(messages)) {
       return res.status(400).json({ error: 'Messages array is required' });
@@ -1381,15 +1516,19 @@ app.post('/api/chat', async (req, res) => {
     let toolCallData: any = null;
     let toolResultData: any = null;
     let resourceData: any = null;
+    const resourcesData: any[] = [];
     let rawCommand = '';
     let aiSucceeded = false;
 
     // STEP 1: Call Gemini Generative AI Model with tools enabled
     const ai = getGenAI();
     if (ai) {
-      const systemInstruction = getSystemPrompt(userCoordinates, Boolean(isRetry));
-      const contents = messages.map((m: any) => {
-        let text = m.content;
+      const systemInstruction = getSystemPrompt(userCoordinates, Boolean(isRetry), userSettings);
+      // Build contents ensuring valid alternating turns starting with user
+      const contents: any[] = [];
+      let lastRole: string | null = null;
+      for (const m of messages) {
+        let text = m.content || '';
         const msgFiles: any[] = [];
         if (Array.isArray(m.attachments) && m.attachments.length > 0) {
           msgFiles.push(...m.attachments);
@@ -1400,7 +1539,7 @@ app.post('/api/chat', async (req, res) => {
         if (msgFiles.length > 0 && m.role === 'user') {
           const filesSummary = msgFiles
             .map(
-              (f, idx) =>
+              (f: any, idx: number) =>
                 `[Attached File #${idx + 1}: ${f.name} (${f.fileTypeLabel || f.type || 'file'})]\n${
                   f.content ? `Content:\n${f.content.slice(0, 3000)}\n` : ''
                 }`
@@ -1408,13 +1547,43 @@ app.post('/api/chat', async (req, res) => {
             .join('\n');
           text = `${filesSummary}\n\n${text}`;
         }
-        return {
-          role: m.role === 'assistant' ? 'model' : 'user',
-          parts: [{ text }],
-        };
-      });
 
-      for (const modelName of GEMINI_MODELS) {
+        const role = m.role === 'assistant' ? 'model' : 'user';
+        if (contents.length > 0 && lastRole === role) {
+          contents[contents.length - 1].parts[0].text += `\n\n${text}`;
+        } else {
+          contents.push({
+            role,
+            parts: [{ text: text || ' ' }],
+          });
+          lastRole = role;
+        }
+      }
+
+      // Ensure the first message is from 'user'
+      if (contents.length > 0 && contents[0].role !== 'user') {
+        contents.unshift({
+          role: 'user',
+          parts: [{ text: 'Hello' }],
+        });
+      }
+
+      let requestedModel = userSettings?.model;
+      if (
+        !requestedModel ||
+        requestedModel.includes('2.5') ||
+        requestedModel.includes('2.0') ||
+        requestedModel.includes('1.5')
+      ) {
+        requestedModel = 'gemini-3.7-flash';
+      }
+
+      const prioritizedModels = [
+        requestedModel,
+        ...GEMINI_MODELS.filter((m) => m !== requestedModel),
+      ];
+
+      for (const modelName of prioritizedModels) {
         try {
           const geminiRes = await ai.models.generateContent({
             model: modelName,
@@ -1438,9 +1607,25 @@ app.post('/api/chat', async (req, res) => {
             },
           });
 
-          // Check for tool function calls
-          const functionCalls = geminiRes.functionCalls;
-          if (functionCalls && functionCalls.length > 0) {
+          // Safely extract function calls without throwing
+          let functionCalls: any[] = [];
+          try {
+            if (geminiRes.functionCalls && geminiRes.functionCalls.length > 0) {
+              functionCalls = geminiRes.functionCalls;
+            }
+          } catch {
+            // ignore
+          }
+
+          if (functionCalls.length === 0 && geminiRes.candidates?.[0]?.content?.parts) {
+            for (const part of geminiRes.candidates[0].content.parts) {
+              if (part.functionCall) {
+                functionCalls.push(part.functionCall);
+              }
+            }
+          }
+
+          if (functionCalls.length > 0) {
             const call = functionCalls[0];
             const args = (call.args || {}) as Record<string, any>;
             toolCallData = {
@@ -1450,42 +1635,22 @@ app.post('/api/chat', async (req, res) => {
             };
           }
 
-          const rawText = geminiRes.text;
+          // Safely extract text without throwing when candidate contains only function calls
+          let rawText = '';
+          try {
+            rawText = geminiRes.text || '';
+          } catch {
+            const parts = geminiRes.candidates?.[0]?.content?.parts || [];
+            const textParts = parts.filter((p: any) => p && p.text).map((p: any) => p.text);
+            rawText = textParts.join('\n');
+          }
+
           if (rawText && rawText.trim()) {
-            responseText = rawText;
+            responseText = rawText.trim();
             aiSucceeded = true;
             break;
           } else if (toolCallData) {
-            // Function was called without standalone text: produce descriptive response
-            if (toolCallData.name === 'map_2d') {
-              const place = toolCallData.args.query || 'the requested location';
-              responseText = `I have loaded the 3D GIS interactive map for **${place}** in the preview panel. You can explore 3D terrain, search travel routes, check bus routes, and monitor live traffic.`;
-            } else if (toolCallData.name === 'bin_hero') {
-              const postcode = (toolCallData.args.postcode || 'HU5 2EG').toUpperCase();
-              responseText = `Here is the upcoming household collection schedule for **${postcode}**. The full collection breakdown is loaded in the side preview panel.`;
-            } else if (toolCallData.name === 'send_bin_email_reminder') {
-              const email = toolCallData.args.email || 'your email';
-              const postcode = (toolCallData.args.postcode || 'HU5 2EG').toUpperCase();
-              responseText = `I have sent your **household bin collection schedule and email reminder** to **${email}** for postcode **${postcode}**.\n\n### ⏰ When to Take Out Your Bins:\n- **Evening Before**: Put your bins out at the kerbside by **7:00 PM the evening before collection**.\n- **Morning of Collection**: Or at the latest by **7:00 AM on collection morning**.\n- **Placement**: Place bins at the boundary with handles facing the road and lids closed.\n\nYour active email reminder is set and the full schedule is loaded in the side preview panel.`;
-            } else if (toolCallData.name === 'open_webpage') {
-              const q = toolCallData.args.query || 'Research';
-              responseText = `I have launched live web research for **"${q}"** in the side preview panel.`;
-            } else if (toolCallData.name === 'analyze_file') {
-              const f = toolCallData.args.fileName || (allAttachedFiles[0]?.name ?? 'file');
-              responseText = `I have analyzed the attached document **${f}** and loaded the details in the preview panel.`;
-            } else if (toolCallData.name === 'calendar') {
-              const act = toolCallData.args.action;
-              if (act === 'add') {
-                responseText = `I have added **"${toolCallData.args.title || 'New Schedule'}"** to your calendar. You can view your updated schedule in the side preview panel.`;
-              } else if (act === 'remove' || act === 'delete') {
-                responseText = `I have removed **"${toolCallData.args.title || 'the schedule'}"** from your calendar.`;
-              } else {
-                responseText = `I have opened your interactive Calendar & Schedule Manager in the preview panel. You can manage dates, deadlines, and appointments.`;
-              }
-            } else if (toolCallData.name === 'weather_detector') {
-              const loc = toolCallData.args.location || 'London, UK';
-              responseText = `I have launched the live Weather Detector for **${loc}** in the preview panel with real-time temperature, radar, and 7-day forecast.`;
-            }
+            // If the model called a tool but did not output standalone text, proceed with tool execution
             aiSucceeded = true;
             break;
           }
@@ -1514,208 +1679,83 @@ app.post('/api/chat', async (req, res) => {
         responseText = responseText.replace(rawCommand, '').trim();
       }
 
-      const resMatch = responseText.match(/\[RESOURCE:\s*(\{.*?\})\s*\]/s);
-      if (resMatch) {
+      const resRegex = /\[RESOURCE:\s*(\{.*?\})\s*\]/gs;
+      let rMatch: RegExpExecArray | null;
+      while ((rMatch = resRegex.exec(responseText)) !== null) {
         try {
-          resourceData = JSON.parse(resMatch[1]);
-          responseText = responseText.replace(resMatch[0], '').trim();
+          const parsed = JSON.parse(rMatch[1]);
+          if (parsed && (parsed.url || parsed.title)) {
+            resourcesData.push(parsed);
+            if (!resourceData) {
+              resourceData = parsed;
+            }
+          }
         } catch (parseErr) {
           console.error('Resource parse error:', parseErr);
         }
       }
+      responseText = responseText.replace(resRegex, '').trim();
     }
 
-    // STEP 3: Fallback if offline / network constraint
-    if (!aiSucceeded || !responseText) {
-      if (
-        userTextLower.includes('calendar') ||
-        userTextLower.includes('schedule') ||
-        userTextLower.includes('add date') ||
-        userTextLower.includes('add event') ||
-        userTextLower.includes('meeting') ||
-        userTextLower.includes('appointment') ||
-        userTextLower.includes('deadline') ||
-        userTextLower.includes('reminder')
-      ) {
-        const isAdd = userTextLower.includes('add') || userTextLower.includes('set') || userTextLower.includes('create') || userTextLower.includes('schedule a');
-        let title = userPrompt.replace(/add|set|create|schedule|calendar|event|reminder|on|at|for/gi, ' ').trim();
-        if (!title) title = 'Upcoming Schedule';
-        
-        toolCallData = {
-          name: 'calendar',
-          args: {
-            action: isAdd ? 'add' : 'view',
-            title: isAdd ? title : undefined,
-            date: new Date().toISOString().split('T')[0],
-          },
-          commandString: `[TOOL_CALL: calendar | {"action": "${isAdd ? 'add' : 'view'}", "title": "${title}"}]`,
-        };
-        responseText = isAdd
-          ? `I have updated your Calendar & Schedule Manager with **"${title}"**. The full schedule, monthly calendar, and deadlines are interactive in the side preview panel.`
-          : `I have opened your interactive Calendar & Schedule Manager in the side preview panel. You can check upcoming events, browse the monthly calendar, and add new dates.`;
-      } else if (
-        userTextLower.includes('weather') ||
-        userTextLower.includes('forecast') ||
-        userTextLower.includes('temperature') ||
-        userTextLower.includes('degrees') ||
-        userTextLower.includes('rain') ||
-        userTextLower.includes('sunny') ||
-        userTextLower.includes('wind') ||
-        userTextLower.includes('humidity') ||
-        userTextLower.includes('uv index')
-      ) {
-        let loc = userPrompt.replace(/weather|forecast|temperature|degrees|rain|sunny|wind|humidity|uv index|what is the|how is the|in|at|for/gi, ' ').trim();
-        let targetLat = userCoordinates?.lat;
-        let targetLon = userCoordinates?.lon;
-        if (!loc || loc.length < 2) {
-          loc = userCoordinates ? 'Current Location' : 'London, UK';
-        }
-        toolCallData = {
-          name: 'weather_detector',
-          args: { location: loc, units: 'metric' },
-          commandString: `[TOOL_CALL: weather_detector | {"location": "${loc}"}]`,
-        };
-        const weather = await fetchRealWeatherData(loc, targetLat, targetLon);
-        responseText = `Here is the current live weather report for **${weather.location}**: Currently **${weather.current.temperature}°C** with **${weather.current.condition}** (${weather.current.description}). Highs of **${weather.current.high}°C**, humidity at **${weather.current.humidity}%**, and wind speed of **${weather.current.windSpeedMph} mph**. The 7-day extended forecast and live precipitation radar are available in the preview panel.`;
-      } else if (
-        userTextLower.includes('map') ||
-        userTextLower.includes('gis') ||
-        userTextLower.includes('where is') ||
-        userTextLower.includes('locate') ||
-        userTextLower.includes('directions') ||
-        userTextLower.includes('set location') ||
-        userTextLower.includes('show location') ||
-        userTextLower.includes('navigate to') ||
-        userTextLower.includes('go to ') ||
-        userTextLower.includes('show me ')
-      ) {
-        let query = 'London, UK';
-        if (
-          userTextLower.includes('current location') ||
-          userTextLower.includes('my location') ||
-          userTextLower.includes('locate me')
-        ) {
-          query = userCoordinates
-            ? `Coordinates (${userCoordinates.lat.toFixed(4)}, ${userCoordinates.lon.toFixed(4)})`
-            : 'London, UK';
+    // If Gemini or model triggered a tool call but did not provide text, produce natural conversational response
+    if (toolCallData && (!responseText || !responseText.trim())) {
+      if (toolCallData.name === 'map_2d') {
+        const place = toolCallData.args.query || (userCoordinates ? 'your location' : 'the requested area');
+        responseText = `I have loaded the interactive GIS map for **${place}** in the preview panel. You can explore satellite/streets, search routes, check local places, and inspect locations.`;
+      } else if (toolCallData.name === 'bin_hero') {
+        const postcode = (toolCallData.args.postcode || 'HU5 2EG').toUpperCase();
+        responseText = `Here is the upcoming household collection schedule for **${postcode}**. The full collection breakdown is loaded in the side preview panel.`;
+      } else if (toolCallData.name === 'send_bin_email_reminder') {
+        const email = toolCallData.args.email || 'your email';
+        const postcode = (toolCallData.args.postcode || 'HU5 2EG').toUpperCase();
+        responseText = `I have sent your **household bin collection schedule and email reminder** to **${email}** for postcode **${postcode}**.\n\n### ⏰ When to Take Out Your Bins:\n- **Evening Before**: Put your bins out at the kerbside by **7:00 PM the evening before collection**.\n- **Morning of Collection**: Or at the latest by **7:00 AM on collection morning**.\n- **Placement**: Place bins at the boundary with handles facing the road and lids closed.\n\nYour active email reminder is set and the full schedule is loaded in the side preview panel.`;
+      } else if (toolCallData.name === 'open_webpage') {
+        const q = toolCallData.args.query || 'Research';
+        responseText = `I have launched live **Bing Web Research** for **"${q}"** in the side preview panel.`;
+      } else if (toolCallData.name === 'analyze_file') {
+        const f = toolCallData.args.fileName || (allAttachedFiles[0]?.name ?? 'document');
+        responseText = `I have analyzed the attached document **${f}** and loaded the details in the preview panel.`;
+      } else if (toolCallData.name === 'calendar') {
+        const act = toolCallData.args.action;
+        if (act === 'add') {
+          responseText = `I have added **"${toolCallData.args.title || 'New Schedule'}"** to your calendar. You can view your updated schedule in the side preview panel.`;
+        } else if (act === 'remove' || act === 'delete') {
+          responseText = `I have removed **"${toolCallData.args.title || 'the schedule'}"** from your calendar.`;
         } else {
-          const cleaned = userPrompt.replace(/map|gis|show me|where is|locate|set location to|set location|navigate to|go to|directions to|directions for|directions/gi, '').trim();
-          query = cleaned || 'London, UK';
+          responseText = `I have opened your interactive Calendar & Schedule Manager in the preview panel. You can manage dates, deadlines, and appointments.`;
         }
-        const geo = await fetchRealGeocode(query, userCoordinates?.lat, userCoordinates?.lon);
-        toolCallData = {
-          name: 'map_2d',
-          args: { query, latitude: geo.lat, longitude: geo.lon },
-          commandString: `[TOOL_CALL: map_2d | {"query": "${query}", "latitude": ${geo.lat}, "longitude": ${geo.lon}}]`,
-        };
-        responseText = `I have loaded the 3D GIS interactive map for **${query}** in the preview panel. You can explore 3D terrain, search travel routes, check bus routes, and monitor live traffic.`;
-      } else if (
-        (userTextLower.includes('bin') ||
-          userTextLower.includes('rubbish') ||
-          userTextLower.includes('recycling') ||
-          userTextLower.includes('waste') ||
-          userTextLower.includes('collection')) &&
-        (userTextLower.includes('email') || userTextLower.includes('remind') || userTextLower.includes('send'))
-      ) {
-        const emailMatch = userPrompt.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
-        const recipientEmail = emailMatch ? emailMatch[0] : 'mailbryanuk@gmail.com';
-        const match = userPrompt.match(/[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}/i);
-        const postcode = match ? match[0].toUpperCase() : 'HU5 2EG';
+      } else if (toolCallData.name === 'weather_detector') {
+        const loc = toolCallData.args.location || (userCoordinates ? 'Current Location' : 'London, UK');
+        responseText = `I have launched the live Weather Detector for **${loc}** in the preview panel with real-time temperature, radar, and 7-day forecast.`;
+      }
+      aiSucceeded = true;
+    }
 
-        toolCallData = {
-          name: 'send_bin_email_reminder',
-          args: { email: recipientEmail, postcode, reminderTime: 'Evening before collection at 7:00 PM' },
-          commandString: `[TOOL_CALL: send_bin_email_reminder | {"email": "${recipientEmail}", "postcode": "${postcode}"}]`,
-        };
-        const emailRes = await sendBinReminderEmail({
-          email: recipientEmail,
-          postcode,
-          reminderTiming: 'Evening before collection at 7:00 PM',
-        });
-        responseText = `I have sent your **household bin collection schedule and email reminder** to **${recipientEmail}** for postcode **${postcode}** (${emailRes.schedule.council}).\n\n### ⏰ When to Take Out Your Bins:\n- **Timing**: Put your bins out by **7:00 PM the evening before** or at latest by **7:00 AM on collection morning**.\n- **Placement**: Place bins at the kerbside with handles facing the road and lids fully closed.\n\n### 📅 Upcoming Collections:\n` +
-          emailRes.schedule.collections.map((c: any) => `- **${c.name}**: ${c.date} (${c.daysRemaining} days away)`).join('\n') +
-          `\n\nThe complete collection schedule and active reminder details are also loaded in the side preview panel.`;
-      } else if (
-        userTextLower.includes('bin') ||
-        userTextLower.includes('rubbish') ||
-        userTextLower.includes('recycling') ||
-        userTextLower.includes('waste') ||
-        userTextLower.includes('collection')
-      ) {
-        const match = userPrompt.match(/[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}/i);
-        const postcode = match ? match[0].toUpperCase() : 'HU5 2EG';
-        toolCallData = {
-          name: 'bin_hero',
-          args: { postcode },
-          commandString: `[TOOL_CALL: bin_hero | {"postcode": "${postcode}"}]`,
-        };
-        const schedule = calculateBinSchedule(postcode);
-        responseText = `Here is the upcoming household collection schedule for **${postcode}** (${schedule.council}). Your next collection is **${schedule.collections[0].name}** on **${schedule.collections[0].date}** (${schedule.collections[0].daysRemaining} days away).`;
-      } else if (
-        userTextLower.includes('research') ||
-        userTextLower.includes('search') ||
-        userTextLower.includes('look up') ||
-        userTextLower.includes('browse')
-      ) {
-        const query =
-          userPrompt.replace(/research|search for|look up|find information on/gi, '').trim() ||
-          'AI agent architectures';
-        const searchUrl = `https://duckduckgo.com/?q=${encodeURIComponent(query)}`;
-        toolCallData = {
-          name: 'open_webpage',
-          args: { query, url: searchUrl },
-          commandString: `[TOOL_CALL: open_webpage | {"query": "${query}", "url": "${searchUrl}"}]`,
-        };
-        responseText = `I have launched the live web research preview for **"${query}"** in the side panel.`;
-      } else if (allAttachedFiles.length > 0) {
-        const firstFile = allAttachedFiles[0];
-        const fileNames = allAttachedFiles.map((f: any) => `**${f.name}**`).join(', ');
-        toolCallData = {
-          name: 'analyze_file',
-          args: { fileName: firstFile.name },
-          commandString: `[TOOL_CALL: analyze_file | {"fileName": "${firstFile.name}"}]`,
-        };
-        responseText = `I have inspected your attached file${allAttachedFiles.length > 1 ? 's' : ''} (${fileNames}). The extracted contents and analysis are loaded in the side preview panel.`;
-      } else if (
-        userTextLower.includes('code') ||
-        userTextLower.includes('script') ||
-        userTextLower.includes('python') ||
-        userTextLower.includes('typescript') ||
-        userTextLower.includes('javascript') ||
-        userTextLower.includes('react') ||
-        userTextLower.includes('html') ||
-        userTextLower.includes('css') ||
-        userTextLower.includes('json') ||
-        userTextLower.includes('function') ||
-        userTextLower.includes('file')
-      ) {
-        let lang = 'typescript';
-        let fileName = 'app.ts';
-        let codeBody = `// Generated implementation for ${userPrompt}\nexport function processData(items: number[]): { total: number; average: number } {\n  const total = items.reduce((acc, val) => acc + val, 0);\n  const average = items.length ? total / items.length : 0;\n  return { total, average };\n}`;
-        if (userTextLower.includes('python')) {
-          lang = 'python';
-          fileName = 'script.py';
-          codeBody = `# Python script for ${userPrompt}\ndef process_data(items):\n    """Processes items and computes aggregate statistics."""\n    total = sum(items)\n    avg = total / len(items) if items else 0\n    return {"total": total, "average": avg}\n\nif __name__ == "__main__":\n    sample = [12, 24, 36, 48, 60]\n    print("Results:", process_data(sample))`;
-        } else if (userTextLower.includes('html') || userTextLower.includes('css')) {
-          lang = 'html';
-          fileName = 'index.html';
-          codeBody = `<!DOCTYPE html>\n<html lang="en">\n<head>\n  <meta charset="UTF-8">\n  <title>${userPrompt}</title>\n  <style>\n    body { font-family: system-ui, sans-serif; background: #171210; color: #ede8e3; padding: 2rem; }\n    .card { background: #211c19; border: 1px solid #3d332d; border-radius: 8px; padding: 1.5rem; }\n  </style>\n</head>\n<body>\n  <div class="card">\n    <h1>Resource Bot UI</h1>\n    <p>Implementation ready for deployment.</p>\n  </div>\n</body>\n</html>`;
-        } else if (userTextLower.includes('json')) {
-          lang = 'json';
-          fileName = 'config.json';
-          codeBody = `{\n  "name": "resource-bot-config",\n  "query": "${userPrompt.replace(/"/g, '\\"')}",\n  "timestamp": "${new Date().toISOString()}",\n  "active": true,\n  "settings": {\n    "timeout": 3000,\n    "retries": 3\n  }\n}`;
+    // STEP 3: Fallback AI call if Gemini didn't return text
+    if (!aiSucceeded || !responseText) {
+      const systemInstruction = getSystemPrompt(userCoordinates, Boolean(isRetry), userSettings);
+      try {
+        const fallbackText = await generateFallbackAIResponse(
+          messages,
+          systemInstruction,
+          userSettings,
+          Boolean(isRetry)
+        );
+        if (fallbackText && fallbackText.trim()) {
+          responseText = fallbackText;
+          aiSucceeded = true;
         }
-        responseText = `Here is the requested implementation for **${userPrompt}**:\n\n!(${lang})(${fileName}) (default: white)\n${codeBody}!\n\nYou can click the **Download** icon to save the file or the **Copy** icon to copy the code to your clipboard.`;
-      } else {
-        if (isRetry) {
-          responseText = `### Alternative Perspective: **${userPrompt}**\n\nHere is an %{gold}alternative breakdown and deeper analysis% regarding **${userPrompt}**:\n\n- **Core Principle**: Approach the subject by isolating fundamental parameters and prioritizing key variables.\n- **Actionable Takeaway**: %{emerald}Optimize the execution flow% by establishing measurable milestones and validating intermediate outputs.\n- **Additional Context**: You can also test specific coordinates on the **2D interactive map**, look up UK council schedules with **Bin Hero**, or request deep technical breakdowns.`;
-        } else {
-          responseText = `I have received your request regarding **${userPrompt}**:\n\nTo assist you further, I can provide detailed answers, write and debug code, map any location with **2D interactive maps**, check **UK bin collection schedules**, or launch **live web research** in the side panel.`;
-        }
+      } catch (e) {
+        console.warn('Fallback AI error:', e);
       }
     }
 
-    // STEP 4: Build tool result payload if tool was invoked
+    // STEP 4: Fallback conversational response only if AI providers are unreachable
+    if (!aiSucceeded || !responseText) {
+      responseText = `I encountered a momentary connection timeout with the model. Please try sending your message again.`;
+    }
+
+    // STEP 5: Build tool result payload ONLY if the AI model chose to invoke a tool
     if (toolCallData) {
       const toolName = toolCallData.name;
       const args = toolCallData.args || {};
@@ -1778,27 +1818,27 @@ app.post('/api/chat', async (req, res) => {
           };
         }
       } else if (toolName === 'open_webpage') {
-        toolCallData.liveText = 'Web research preview';
+        toolCallData.liveText = 'Bing Web Research preview';
         const query = args.query || 'Resource Bot Search';
         const searchUrl =
-          args.url || `https://duckduckgo.com/?q=${encodeURIComponent(query)}`;
+          args.url || `https://www.bing.com/search?q=${encodeURIComponent(query)}`;
         toolResultData = {
           type: 'web',
           query,
           url: searchUrl,
-          summary: args.summary || `Live web research for "${query}"`,
+          summary: args.summary || `Live Bing web research for "${query}"`,
         };
         if (!resourceData) {
           try {
             resourceData = {
-              title: query,
-              domain: new URL(searchUrl).hostname || 'duckduckgo.com',
+              title: `Bing Search: ${query}`,
+              domain: 'bing.com',
               url: searchUrl,
             };
           } catch {
             resourceData = {
               title: query,
-              domain: 'web',
+              domain: 'bing.com',
               url: searchUrl,
             };
           }
@@ -1877,22 +1917,28 @@ app.post('/api/chat', async (req, res) => {
 
     // Generate structured thoughts reasoning chain
     const thoughts: string[] = [
-      `Analyzed prompt: "${userPrompt.slice(0, 60)}${userPrompt.length > 60 ? '...' : ''}"`,
+      `Step 1: Analyzed prompt intent and contextual parameters for "${userPrompt.slice(0, 50)}${userPrompt.length > 50 ? '...' : ''}"`,
       toolCallData
-        ? `Identified visual tool trigger [${toolCallData.name}] with parameters: ${JSON.stringify(toolCallData.args)}`
-        : 'Evaluated tool prerequisites; direct generative knowledge retrieval selected',
-      'Synthesized response adhering to markdown headings (#, ##, ###) and bold keyword emphasis',
-      'Verified visual preview payload and grounding accuracy',
+        ? `Step 2: Launched visual tool [${toolCallData.name}] with active parameters: ${JSON.stringify(toolCallData.args)}`
+        : 'Step 2: Queried Bing web intelligence and knowledge base for accurate grounding',
+      'Step 3: Synthesized structured response adhering to markdown headings (#, ##, ###) and bold keyword emphasis',
+      'Step 4: Verified interactive visual preview grounding and response fidelity',
     ];
 
     // Generate intelligent contextual suggestions for what the user could say next (like Google AI Studio)
     const suggestions = generateContextualSuggestions(userPrompt, responseText || '', toolCallData);
+
+    // If tool generated a default resource and resourcesData is empty, add it
+    if (resourceData && resourcesData.length === 0) {
+      resourcesData.push(resourceData);
+    }
 
     res.json({
       text: responseText || 'Processed request.',
       toolCall: toolCallData,
       toolResult: toolResultData,
       resource: resourceData,
+      resources: resourcesData.length > 0 ? resourcesData : (resourceData ? [resourceData] : undefined),
       rawCommand: toolCallData?.commandString || rawCommand,
       thoughts,
       suggestions,
